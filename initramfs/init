@@ -32,10 +32,13 @@
 # Kernel modules this script needs present at /lib/modules/<uname -r>/ with a matching
 # modules.dep (generated via `depmod -b`, NOT just copied .ko files -- modprobe needs it
 # to resolve dependencies, confirmed live that ahci needs libahci loaded first):
-# e1000, e1000e, virtio_net (common NICs), ahci, virtio_blk, nvme (common disk
-# controllers). Confirmed live and NOT assumed: this kernel has NONE of these built in
-# at all, even Debian's own purpose-built netboot kernel -- /proc/modules was completely
-# empty and no PCI probing happened for the NIC until the matching module was loaded.
+# e1000, e1000e, virtio_net (common NICs), ahci, virtio_blk, nvme, mptsas, mptspi,
+# vmw_pvscsi (common disk controllers -- the last three specifically for VMware's own
+# LSI Logic SAS/Parallel and Paravirtual SCSI controllers, confirmed live needed on
+# real VMware hardware, not just the QEMU/KVM controllers tried first). Confirmed live
+# and NOT assumed: this kernel has NONE of these built in at all, even Debian's own
+# purpose-built netboot kernel -- /proc/modules was completely empty and no PCI probing
+# happened for the NIC until the matching module was loaded.
 #
 # Version history (append only, never delete entries):
 #   0.1.0  2026-11-02  First draft. Untested -- no real initramfs has been built around
@@ -113,6 +116,22 @@
 #                       "disk", producing the nonsense target "/dev/*". Added an
 #                       `[ -e "$dev" ] || continue` guard to both this loop and the
 #                       network-interface one, which has the identical glob shape.
+#   0.5.0  2026-11-02  First real boot on actual VMware hardware (not just this
+#                       estate's own sandbox QEMU), by Robert directly. Networking
+#                       worked cleanly first try (real DHCP lease, real IP). Disk
+#                       auto-detect correctly found zero disks -- not a bug, a real
+#                       gap: VMware's own SCSI controllers (LSI Logic SAS/Parallel,
+#                       Paravirtual/PVSCSI) were never bundled at all, only
+#                       QEMU/KVM-oriented ones (ahci/virtio_blk/nvme). Added
+#                       mptsas/mptspi (LSI Logic SAS and Parallel, confirmed via
+#                       modinfo real dependency chain: both need mptbase+mptscsih,
+#                       mptsas additionally needs scsi_transport_sas, mptspi needs
+#                       scsi_transport_spi) and vmw_pvscsi (VMware's own Paravirtual
+#                       SCSI, simpler -- only needs scsi_mod). Bundled both LSI
+#                       variants rather than just the one Robert's VM happened to be
+#                       using, since VMware offers either as a plain config choice
+#                       and there's no reason to leave the same gap for whichever one
+#                       wasn't tested this time.
 #
 set -eu
 
@@ -138,7 +157,7 @@ mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
 # real hardware. modprobe (not insmod) is used so modules.dep resolves
 # dependencies correctly (e.g. ahci needs libahci) rather than needing them
 # hand-ordered here.
-for mod in e1000 e1000e virtio_net ahci sd_mod virtio_blk nvme; do
+for mod in e1000 e1000e virtio_net ahci sd_mod virtio_blk nvme mptsas mptspi vmw_pvscsi; do
   modprobe "$mod" 2>/dev/null || true
 done
 

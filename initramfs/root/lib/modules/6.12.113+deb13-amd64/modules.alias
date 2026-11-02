@@ -1,4 +1,5 @@
 # Aliases extracted from modules themselves.
+alias pci:v000015ADd000007C0sv*sd*bc*sc*i* vmw_pvscsi
 alias pci:v*d*sv*sd*bc01sc06i01* ahci
 alias pci:v00000014d00007A08sv*sd*bc*sc*i* ahci
 alias pci:v00001C44d00008000sv*sd*bc*sc*i* ahci
@@ -567,3 +568,12 @@ alias block-major-67-* sd_mod
 alias block-major-66-* sd_mod
 alias block-major-65-* sd_mod
 alias block-major-8-* sd_mod
+alias pci:v00001000d00000040sv*sd*bc*sc*i* mptspi
+alias pci:v0000117Cd00000030sv*sd*bc*sc*i* mptspi
+alias pci:v00001000d00000030sv*sd*bc*sc*i* mptspi
+alias pci:v00001000d00000059sv*sd*bc*sc*i* mptsas
+alias pci:v00001000d00000062sv*sd*bc*sc*i* mptsas
+alias pci:v00001000d00000058sv*sd*bc*sc*i* mptsas
+alias pci:v00001000d00000056sv*sd*bc*sc*i* mptsas
+alias pci:v00001000d00000054sv*sd*bc*sc*i* mptsas
+alias pci:v00001000d00000050sv*sd*bc*sc*i* mptsas

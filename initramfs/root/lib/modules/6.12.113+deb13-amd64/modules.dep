@@ -1,4 +1,6 @@
+kernel/drivers/scsi/vmw_pvscsi.ko: kernel/drivers/scsi/scsi_mod.ko kernel/drivers/scsi/scsi_common.ko
 kernel/drivers/ata/ahci.ko: kernel/drivers/ata/libahci.ko kernel/drivers/ata/libata.ko kernel/drivers/scsi/scsi_mod.ko kernel/drivers/scsi/scsi_common.ko
+kernel/drivers/message/fusion/mptscsih.ko: kernel/drivers/message/fusion/mptbase.ko kernel/drivers/scsi/scsi_mod.ko kernel/drivers/scsi/scsi_common.ko
 kernel/drivers/nvme/common/nvme-keyring.ko:
 kernel/drivers/net/virtio_net.ko: kernel/drivers/net/net_failover.ko kernel/net/core/failover.ko
 kernel/drivers/nvme/host/nvme.ko: kernel/drivers/nvme/host/nvme-core.ko kernel/drivers/nvme/common/nvme-auth.ko
@@ -6,12 +8,17 @@ kernel/drivers/net/ethernet/intel/e1000/e1000.ko:
 kernel/drivers/nvme/host/nvme-fabrics.ko: kernel/drivers/nvme/common/nvme-keyring.ko kernel/drivers/nvme/host/nvme-core.ko kernel/drivers/nvme/common/nvme-auth.ko
 kernel/drivers/scsi/scsi_common.ko:
 kernel/drivers/scsi/scsi_mod.ko: kernel/drivers/scsi/scsi_common.ko
+kernel/drivers/scsi/scsi_transport_sas.ko: kernel/drivers/scsi/scsi_mod.ko kernel/drivers/scsi/scsi_common.ko
 kernel/drivers/net/net_failover.ko: kernel/net/core/failover.ko
 kernel/drivers/nvme/host/nvme-core.ko: kernel/drivers/nvme/common/nvme-auth.ko
 kernel/drivers/block/virtio_blk.ko:
+kernel/drivers/scsi/scsi_transport_spi.ko: kernel/drivers/scsi/scsi_mod.ko kernel/drivers/scsi/scsi_common.ko
 kernel/drivers/net/ethernet/intel/e1000e/e1000e.ko:
 kernel/drivers/scsi/sd_mod.ko: kernel/drivers/scsi/scsi_mod.ko kernel/drivers/scsi/scsi_common.ko
 kernel/drivers/nvme/common/nvme-auth.ko:
+kernel/drivers/message/fusion/mptspi.ko: kernel/drivers/scsi/scsi_transport_spi.ko kernel/drivers/message/fusion/mptscsih.ko kernel/drivers/message/fusion/mptbase.ko kernel/drivers/scsi/scsi_mod.ko kernel/drivers/scsi/scsi_common.ko
+kernel/drivers/message/fusion/mptsas.ko: kernel/drivers/scsi/scsi_transport_sas.ko kernel/drivers/message/fusion/mptscsih.ko kernel/drivers/message/fusion/mptbase.ko kernel/drivers/scsi/scsi_mod.ko kernel/drivers/scsi/scsi_common.ko
 kernel/drivers/ata/libata.ko: kernel/drivers/scsi/scsi_mod.ko kernel/drivers/scsi/scsi_common.ko
+kernel/drivers/message/fusion/mptbase.ko:
 kernel/net/core/failover.ko:
 kernel/drivers/ata/libahci.ko: kernel/drivers/ata/libata.ko kernel/drivers/scsi/scsi_mod.ko kernel/drivers/scsi/scsi_common.ko
