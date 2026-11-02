@@ -1,0 +1,286 @@
+#!/bin/sh
+# init
+#
+# Grænsevagt's own init (PID 1) -- runs inside a minimal busybox-based initramfs,
+# booted directly by iPXE (kernel+initrd, no installer media at all). Its only job:
+# fetch a prebuilt disk image over HTTP and write it to the target's local disk, then
+# reboot into it. Everything about BUILDING that image (the real installer, run once,
+# offline, via QEMU) is a separate concern -- see the parent project's own docs for that
+# side. This script only ever handles deployment, not building.
+#
+# Kernel command line parameters consumed (set by the iPXE menu entry that boots this):
+#   graensevagt_image=<url>      Required. URL of a gzip-compressed raw disk image.
+#   graensevagt_checksum=<url>   Optional. URL of a plain-text file whose first
+#                                 whitespace-separated field is the image's sha256sum
+#                                 (same convention this estate's other fetch tooling
+#                                 already uses for checksum_file_url/_entry -- GNU
+#                                 coreutils sha256sum -c format works directly).
+#   graensevagt_disk=<dev>|auto  Required. Target block device (e.g. /dev/sda), or the
+#                                 literal string "auto" to use the single disk present --
+#                                 refuses outright if more than one is found, rather than
+#                                 guessing which one is meant.
+#   graensevagt_iface=<name>     Optional. Network interface to bring up via DHCP. If
+#                                 unset, auto-detects the first non-loopback interface --
+#                                 confirmed live that "eth0" cannot be hardcoded (modern
+#                                 kernels use predictable interface names by default,
+#                                 e.g. "ens18" under QEMU, not "eth0"/"eth1").
+#
+# Busybox applets this script needs present in the build: mount, cat, mkdir, sleep, tee,
+# mkfifo, dd, wget, gunzip, sha256sum, udhcpc, modprobe, reboot -- all confirmed present
+# in Debian's own busybox build (1:1.37.0-6+b9) via `busybox --list`.
+#
+# Kernel modules this script needs present at /lib/modules/<uname -r>/ with a matching
+# modules.dep (generated via `depmod -b`, NOT just copied .ko files -- modprobe needs it
+# to resolve dependencies, confirmed live that ahci needs libahci loaded first):
+# e1000, e1000e, virtio_net (common NICs), ahci, virtio_blk, nvme (common disk
+# controllers). Confirmed live and NOT assumed: this kernel has NONE of these built in
+# at all, even Debian's own purpose-built netboot kernel -- /proc/modules was completely
+# empty and no PCI probing happened for the NIC until the matching module was loaded.
+#
+# Version history (append only, never delete entries):
+#   0.1.0  2026-11-02  First draft. Untested -- no real initramfs has been built around
+#                       this yet, so none of this has run against real busybox. Written
+#                       against the documented behaviour of each applet, not verified
+#                       live. Treat every assumption above as a presumption to confirm,
+#                       not a settled fact, until it's actually booted for real. Used
+#                       zstd for the image compression/decompression, assuming a
+#                       separate static zstd binary would be bundled.
+#   0.2.0  2026-11-02  Switched to gzip instead -- confirmed via `busybox --list` that
+#                       Debian's busybox build has no zstd applet at all, and no
+#                       Debian-packaged static zstd binary exists either (would have
+#                       needed a third-party upstream binary, its own sourcing/trust
+#                       overhead). gzip -9 instead of zstd -19 costs real size (485MB vs
+#                       320MB compressed, confirmed by actually compressing the same
+#                       image both ways) but needs nothing extra at all -- busybox's own
+#                       gunzip covers it. Robert's call, favouring simplicity.
+#   0.3.0  2026-11-02  First real boot, via a smoke test (small dummy image, QEMU +
+#                       this sandbox's own kernel + a real busybox-static initramfs) --
+#                       found a real bug immediately: hardcoded "eth0" doesn't exist,
+#                       udhcpc died with "SIOCGIFINDEX: No such device". This kernel
+#                       assigns "ens18" under QEMU (predictable interface naming,
+#                       confirmed via /sys/class/net); real target hardware could just
+#                       as easily get something else again. Added graensevagt_iface=
+#                       as an optional override, auto-detecting the first non-loopback
+#                       interface otherwise -- same philosophy as the disk auto-detect
+#                       below (don't hardcode a name that depends on config/hardware
+#                       that will vary). The die()-drops-to-a-shell safety path fired
+#                       correctly and was the only reason this failure was visible at
+#                       all rather than silently hanging -- confirms that part works.
+#   0.3.1  2026-11-02  Second real boot, same session: fixed 0.3.0's own interface
+#                       auto-detect still failed -- /sys/class/net was completely
+#                       empty (not even "lo") a moment after init started, a probe-
+#                       timing race against the e1000 driver, not a permanent absence.
+#                       Added a 10-second retry loop around the detection, not just a
+#                       single check.
+#   0.4.0  2026-11-02  Third real boot found the actual root cause of 0.3.x's whole
+#                       interface problem: /proc/modules was completely empty and no
+#                       PCI probing happened for the NIC at all, on EITHER this
+#                       sandbox's own kernel or Debian's dedicated netboot kernel --
+#                       neither has NIC/disk drivers built in, everything is modular,
+#                       and this initramfs bundled none. Added a small, named module
+#                       tree (e1000/e1000e/virtio_net, ahci/virtio_blk/nvme) with a
+#                       real depmod -b-generated modules.dep, loaded via modprobe
+#                       (resolves dependencies correctly, e.g. ahci needs libahci --
+#                       confirmed via the real dependency graph depmod produced, not
+#                       guessed) right after mounting /proc/sys/dev, before anything
+#                       else runs. Reverted back to this sandbox's own kernel (not
+#                       Debian's netboot one) specifically so the bundled modules'
+#                       version matches exactly what's actually installed here.
+#   0.4.1  2026-11-02  Fourth real boot found two more real bugs: (1) libahci itself
+#                       failed to load ("Unknown symbol ata_link_abort" etc.) --
+#                       missed bundling libata.ko, the actual base module providing
+#                       those symbols; ahci depends on BOTH libahci AND libata, not
+#                       just libahci, confirmed via the regenerated modules.dep.
+#                       (2) interface detection and modprobe both succeeded but
+#                       udhcpc still failed ("sendto: Network is down") -- busybox's
+#                       udhcpc does not bring the interface up itself, confirmed live;
+#                       added an explicit `ip link set $IFACE up` before requesting a
+#                       lease.
+#   0.4.2  2026-11-02  Fifth real boot: DHCP finally worked end to end (real lease
+#                       obtained). Two more real bugs found by that success exposing
+#                       the next layer: (1) libata itself needed scsi_mod (more
+#                       "Unknown symbol" errors, this time scsi_* ones) -- added
+#                       scsi_mod + sd_mod (sd_mod is what actually creates /dev/sdX
+#                       once a SCSI/SATA disk is detected, not an automatic
+#                       dependency of ahci, confirmed via modules.dep -- had to be
+#                       modprobed explicitly). (2) A genuine POSIX shell bug, not a
+#                       missing module: with no disk driver loaded at all, /sys/block
+#                       was completely empty, and `for dev in /sys/block/*` left the
+#                       GLOB PATTERN ITSELF unexpanded as the loop's one and only
+#                       element (standard POSIX behaviour for a glob matching
+#                       nothing) -- "name" became the literal string "*", which
+#                       passed every exclusion check and got counted as one fake
+#                       "disk", producing the nonsense target "/dev/*". Added an
+#                       `[ -e "$dev" ] || continue` guard to both this loop and the
+#                       network-interface one, which has the identical glob shape.
+#
+set -eu
+
+info()  { echo "[*] $*"; }
+ok()    { echo "[+] $*"; }
+warn()  { echo "[!] $*" >&2; }
+die()   { echo "[x] $*" >&2; exec sh; }  # drop to a shell, never just hang silently
+
+info "Graensevagt starting..."
+
+mount -t proc proc /proc 2>/dev/null || true
+mount -t sysfs sysfs /sys 2>/dev/null || true
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+
+# -- Load hardware drivers ---------------------------------------------------
+# Confirmed live: this kernel does NOT have NIC or disk-controller support built in
+# at all -- /proc/modules was completely empty and no PCI device probing happened
+# for the NIC, even on Debian's own purpose-built netboot kernel. Everything is
+# modular; nothing loads itself without an explicit modprobe. The module tree
+# bundled here is deliberately a small, named subset (not the whole kernel's
+# module tree) -- common NICs (e1000/e1000e/virtio_net) and common disk
+# controllers (ahci/virtio_blk/nvme), covering QEMU/VMware testing and ordinary
+# real hardware. modprobe (not insmod) is used so modules.dep resolves
+# dependencies correctly (e.g. ahci needs libahci) rather than needing them
+# hand-ordered here.
+for mod in e1000 e1000e virtio_net ahci sd_mod virtio_blk nvme; do
+  modprobe "$mod" 2>/dev/null || true
+done
+
+# -- Parse kernel command line -------------------------------------------------
+CMDLINE="$(cat /proc/cmdline)"
+
+get_param() {
+  # $1 = param name. Prints the value and returns 0 if found, else returns 1 with no
+  # output -- never prints a bare empty line, so callers can tell "absent" from "set
+  # to empty string" via the exit code alone.
+  found=1
+  for p in $CMDLINE; do
+    case "$p" in
+      "$1="*)
+        echo "${p#"$1"=}"
+        found=0
+        ;;
+    esac
+  done
+  return $found
+}
+
+IMAGE_URL="$(get_param graensevagt_image)" || die "graensevagt_image= not set on kernel command line"
+DISK="$(get_param graensevagt_disk)" || die "graensevagt_disk= not set on kernel command line"
+CHECKSUM_URL="$(get_param graensevagt_checksum || true)"
+IFACE="$(get_param graensevagt_iface || true)"
+
+info "Image:    $IMAGE_URL"
+info "Disk:     $DISK"
+if [ -n "$CHECKSUM_URL" ]; then
+  info "Checksum: $CHECKSUM_URL"
+else
+  warn "No graensevagt_checksum= given -- writing unverified. Fine for a quick test," \
+       "not recommended for a real deploy."
+fi
+
+# -- Networking -----------------------------------------------------------------
+if [ -z "$IFACE" ]; then
+  # Predictable interface naming means this varies by kernel/hardware -- confirmed
+  # live this kernel assigns "ens18" under QEMU, not "eth0". Take the first real
+  # (non-loopback) interface rather than hardcoding a name that won't travel.
+  # Retry for a few seconds -- confirmed live that /sys/class/net can still be empty
+  # (not even "lo" yet) a moment after init starts, if NIC driver probing hasn't
+  # finished. Not a permanent absence, just a race against hardware enumeration.
+  tries=10
+  while [ -z "$IFACE" ] && [ "$tries" -gt 0 ]; do
+    for dev in /sys/class/net/*; do
+      [ -e "$dev" ] || continue  # same unmatched-glob guard as the disk loop below
+      name="${dev##*/}"
+      [ "$name" = "lo" ] && continue
+      IFACE="$name"
+      break
+    done
+    [ -n "$IFACE" ] && break
+    sleep 1
+    tries=$((tries - 1))
+  done
+  [ -n "$IFACE" ] || die "No network interface appeared under /sys/class/net after 10s"
+fi
+info "Interface: $IFACE"
+info "Bringing up the link..."
+ip link set "$IFACE" up || die "Could not bring $IFACE up"
+info "Requesting DHCP lease..."
+udhcpc -q -n -i "$IFACE" || die "DHCP failed on $IFACE"
+
+# -- Resolve target disk ---------------------------------------------------------
+if [ "$DISK" = "auto" ]; then
+  # Real disks only -- loop devices, the boot CD/ISO itself (sr*), and ram disks are
+  # never real deploy targets and would make "exactly one disk" claims meaningless.
+  CANDIDATES=""
+  CANDIDATE_COUNT=0
+  for dev in /sys/block/*; do
+    # If the glob matches nothing at all, POSIX sh leaves the literal pattern string
+    # unexpanded instead of skipping the loop body -- confirmed live, this fired for
+    # real when no disk driver had loaded yet: $dev was literally "/sys/block/*",
+    # "name" became "*", and it silently counted as one fake candidate ("/dev/*").
+    [ -e "$dev" ] || continue
+    name="${dev##*/}"
+    case "$name" in
+      # loop/sr/ram are never real targets. dm-*/md* are virtual (device-mapper/LVM,
+      # software RAID) aggregates layered ON TOP of a real disk, not disks themselves --
+      # confirmed live: this sandbox's own LVM root shows up as dm-0/dm-1 alongside the
+      # real sda, which would have miscounted as "3 disks" without this exclusion. A
+      # target machine being re-imaged (already has LVM/RAID from a prior install)
+      # would hit the exact same false count without this.
+      loop*|sr*|ram*|dm-*|md*) continue ;;
+    esac
+    CANDIDATES="$CANDIDATES $name"
+    CANDIDATE_COUNT=$((CANDIDATE_COUNT + 1))
+  done
+  if [ "$CANDIDATE_COUNT" -ne 1 ]; then
+    die "graensevagt_disk=auto needs exactly one real disk, found $CANDIDATE_COUNT:$CANDIDATES"
+  fi
+  DISK="/dev/${CANDIDATES# }"
+  info "Auto-resolved target disk: $DISK"
+fi
+
+[ -b "$DISK" ] || die "$DISK is not a block device -- refusing to write to it"
+
+# -- Last chance to back out before the disk gets overwritten --------------------
+warn "About to COMPLETELY OVERWRITE $DISK. This cannot be undone."
+warn "Aborting in..."
+i=10
+while [ "$i" -gt 0 ]; do
+  warn "  $i"
+  sleep 1
+  i=$((i - 1))
+done
+
+# -- Fetch, decompress, write, and verify -- all in one streaming pass -----------
+# Never buffers the whole image anywhere (no local filesystem large enough to hold it
+# exists in this environment anyway) -- wget's stdout feeds gunzip, which feeds a fifo
+# split two ways: one copy to the real disk via dd, the other to a backgrounded
+# sha256sum so the checksum can be checked without a second pass over the disk.
+HASH_FIFO="/tmp/graensevagt-hash.fifo"
+HASH_OUT="/tmp/graensevagt-actual.sha256"
+mkfifo "$HASH_FIFO"
+sha256sum "$HASH_FIFO" >"$HASH_OUT" &
+HASH_PID=$!
+
+info "Fetching, decompressing, and writing to $DISK..."
+wget -O - "$IMAGE_URL" | gunzip | tee "$HASH_FIFO" | dd of="$DISK" bs=4M conv=fsync
+wait "$HASH_PID"
+
+ACTUAL_SUM="$(awk '{print $1}' "$HASH_OUT")"
+info "Written image sha256: $ACTUAL_SUM"
+
+if [ -n "$CHECKSUM_URL" ]; then
+  info "Verifying against $CHECKSUM_URL..."
+  EXPECTED_SUM="$(wget -O - "$CHECKSUM_URL" | awk '{print $1}')"
+  if [ "$ACTUAL_SUM" != "$EXPECTED_SUM" ]; then
+    die "CHECKSUM MISMATCH: expected $EXPECTED_SUM, got $ACTUAL_SUM -- $DISK now holds a" \
+        "corrupt or wrong image. Do not reboot into it."
+  fi
+  ok "Checksum verified."
+fi
+
+rm -f "$HASH_FIFO" "$HASH_OUT"
+sync
+
+ok "Write complete. $DISK now holds a fresh image."
+echo
+echo "Remove any installation media now if this hardware needs it, then press Enter to reboot."
+read -r _ || true
+reboot -f

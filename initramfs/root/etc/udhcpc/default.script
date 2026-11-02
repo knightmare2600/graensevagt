@@ -1,0 +1,39 @@
+#!/bin/sh
+# default.script
+#
+# busybox udhcpc's own event hook -- invoked as "default.script <event>" with lease
+# details passed via environment variables ($ip, $subnet, $router, $dns, ...). Without
+# this, udhcpc still successfully negotiates a lease (confirmed live -- "lease of
+# 10.0.2.15 obtained" printed correctly) but never actually applies it: the interface
+# gets no IP, no route, nothing -- confirmed live, wget then failed with "Network is
+# unreachable" despite udhcpc's own apparent success. This script is what makes a
+# successful lease actually usable.
+#
+# Version history (append only, never delete entries):
+#   0.1.0  2026-11-02  First draft, written immediately after finding its absence was
+#                       why a successful DHCP lease still left networking unusable.
+#
+set -eu
+
+case "$1" in
+  deconfig)
+    ip addr flush dev "$interface" 2>/dev/null || true
+    ip link set "$interface" up
+    ;;
+  bound|renew)
+    ip addr flush dev "$interface" 2>/dev/null || true
+    ip addr add "$ip/${subnet:-255.255.255.0}" dev "$interface"
+    if [ -n "${router:-}" ]; then
+      ip route add default via "${router%% *}" dev "$interface" 2>/dev/null || true
+    fi
+    if [ -n "${dns:-}" ]; then
+      : >/etc/resolv.conf
+      for ns in $dns; do
+        echo "nameserver $ns" >>/etc/resolv.conf
+      done
+    fi
+    ;;
+  leasefail|nak)
+    # Nothing to clean up -- deconfig already flushed any prior state.
+    ;;
+esac
