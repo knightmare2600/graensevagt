@@ -1,0 +1,161 @@
+#!/bin/sh
+# init
+#
+# Grænsevagt's own init (PID 1) -- runs inside a minimal busybox-based initramfs,
+# booted directly by iPXE (kernel+initrd, no installer media at all). Its only job:
+# fetch a prebuilt disk image over HTTP and write it to the target's local disk, then
+# reboot into it. Everything about BUILDING that image (the real installer, run once,
+# offline, via QEMU) is a separate concern -- see the parent project's own docs for that
+# side. This script only ever handles deployment, not building.
+#
+# Kernel command line parameters consumed (set by the iPXE menu entry that boots this):
+#   graensevagt_image=<url>      Required. URL of a zstd-compressed raw disk image.
+#   graensevagt_checksum=<url>   Optional. URL of a plain-text file whose first
+#                                 whitespace-separated field is the image's sha256sum
+#                                 (same convention this estate's other fetch tooling
+#                                 already uses for checksum_file_url/_entry -- GNU
+#                                 coreutils sha256sum -c format works directly).
+#   graensevagt_disk=<dev>|auto  Required. Target block device (e.g. /dev/sda), or the
+#                                 literal string "auto" to use the single disk present --
+#                                 refuses outright if more than one is found, rather than
+#                                 guessing which one is meant.
+#
+# Busybox applets this script needs present in the build: mount, cat, mkdir, sleep, tee,
+# mkfifo, dd, wget, sha256sum, udhcpc, reboot. gzip/gunzip ships in virtually every
+# busybox build; zstd decompression support does NOT -- confirmed not guaranteed across
+# busybox configs, so this script assumes a separate static `zstd` binary is bundled in
+# the initramfs rather than relying on busybox's own (inconsistent) zstd applet. If the
+# served image is ever switched to gzip instead, swap the one `zstd -d` line below for
+# `gunzip` and drop the separate static binary.
+#
+# Version history (append only, never delete entries):
+#   0.1.0  2026-11-02  First draft. Untested -- no real initramfs has been built around
+#                       this yet, so none of this has run against real busybox. Written
+#                       against the documented behaviour of each applet, not verified
+#                       live. Treat every assumption above as a presumption to confirm,
+#                       not a settled fact, until it's actually booted for real.
+#
+set -eu
+
+info()  { echo "[*] $*"; }
+ok()    { echo "[+] $*"; }
+warn()  { echo "[!] $*" >&2; }
+die()   { echo "[x] $*" >&2; exec sh; }  # drop to a shell, never just hang silently
+
+info "Graensevagt starting..."
+
+mount -t proc proc /proc 2>/dev/null || true
+mount -t sysfs sysfs /sys 2>/dev/null || true
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+
+# -- Parse kernel command line -------------------------------------------------
+CMDLINE="$(cat /proc/cmdline)"
+
+get_param() {
+  # $1 = param name. Prints the value and returns 0 if found, else returns 1 with no
+  # output -- never prints a bare empty line, so callers can tell "absent" from "set
+  # to empty string" via the exit code alone.
+  found=1
+  for p in $CMDLINE; do
+    case "$p" in
+      "$1="*)
+        echo "${p#"$1"=}"
+        found=0
+        ;;
+    esac
+  done
+  return $found
+}
+
+IMAGE_URL="$(get_param graensevagt_image)" || die "graensevagt_image= not set on kernel command line"
+DISK="$(get_param graensevagt_disk)" || die "graensevagt_disk= not set on kernel command line"
+CHECKSUM_URL="$(get_param graensevagt_checksum || true)"
+
+info "Image:    $IMAGE_URL"
+info "Disk:     $DISK"
+if [ -n "$CHECKSUM_URL" ]; then
+  info "Checksum: $CHECKSUM_URL"
+else
+  warn "No graensevagt_checksum= given -- writing unverified. Fine for a quick test," \
+       "not recommended for a real deploy."
+fi
+
+# -- Networking -----------------------------------------------------------------
+info "Bringing up networking (DHCP)..."
+udhcpc -q -n -i eth0 || die "DHCP failed on eth0 -- is the NIC name right for this hardware?"
+
+# -- Resolve target disk ---------------------------------------------------------
+if [ "$DISK" = "auto" ]; then
+  # Real disks only -- loop devices, the boot CD/ISO itself (sr*), and ram disks are
+  # never real deploy targets and would make "exactly one disk" claims meaningless.
+  CANDIDATES=""
+  CANDIDATE_COUNT=0
+  for dev in /sys/block/*; do
+    name="${dev##*/}"
+    case "$name" in
+      # loop/sr/ram are never real targets. dm-*/md* are virtual (device-mapper/LVM,
+      # software RAID) aggregates layered ON TOP of a real disk, not disks themselves --
+      # confirmed live: this sandbox's own LVM root shows up as dm-0/dm-1 alongside the
+      # real sda, which would have miscounted as "3 disks" without this exclusion. A
+      # target machine being re-imaged (already has LVM/RAID from a prior install)
+      # would hit the exact same false count without this.
+      loop*|sr*|ram*|dm-*|md*) continue ;;
+    esac
+    CANDIDATES="$CANDIDATES $name"
+    CANDIDATE_COUNT=$((CANDIDATE_COUNT + 1))
+  done
+  if [ "$CANDIDATE_COUNT" -ne 1 ]; then
+    die "graensevagt_disk=auto needs exactly one real disk, found $CANDIDATE_COUNT:$CANDIDATES"
+  fi
+  DISK="/dev/${CANDIDATES# }"
+  info "Auto-resolved target disk: $DISK"
+fi
+
+[ -b "$DISK" ] || die "$DISK is not a block device -- refusing to write to it"
+
+# -- Last chance to back out before the disk gets overwritten --------------------
+warn "About to COMPLETELY OVERWRITE $DISK. This cannot be undone."
+warn "Aborting in..."
+i=10
+while [ "$i" -gt 0 ]; do
+  warn "  $i"
+  sleep 1
+  i=$((i - 1))
+done
+
+# -- Fetch, decompress, write, and verify -- all in one streaming pass -----------
+# Never buffers the whole image anywhere (no local filesystem large enough to hold it
+# exists in this environment anyway) -- wget's stdout feeds zstd, which feeds a fifo
+# split two ways: one copy to the real disk via dd, the other to a backgrounded
+# sha256sum so the checksum can be checked without a second pass over the disk.
+HASH_FIFO="/tmp/graensevagt-hash.fifo"
+HASH_OUT="/tmp/graensevagt-actual.sha256"
+mkfifo "$HASH_FIFO"
+sha256sum "$HASH_FIFO" >"$HASH_OUT" &
+HASH_PID=$!
+
+info "Fetching, decompressing, and writing to $DISK..."
+wget -O - "$IMAGE_URL" | zstd -d | tee "$HASH_FIFO" | dd of="$DISK" bs=4M conv=fsync
+wait "$HASH_PID"
+
+ACTUAL_SUM="$(awk '{print $1}' "$HASH_OUT")"
+info "Written image sha256: $ACTUAL_SUM"
+
+if [ -n "$CHECKSUM_URL" ]; then
+  info "Verifying against $CHECKSUM_URL..."
+  EXPECTED_SUM="$(wget -O - "$CHECKSUM_URL" | awk '{print $1}')"
+  if [ "$ACTUAL_SUM" != "$EXPECTED_SUM" ]; then
+    die "CHECKSUM MISMATCH: expected $EXPECTED_SUM, got $ACTUAL_SUM -- $DISK now holds a" \
+        "corrupt or wrong image. Do not reboot into it."
+  fi
+  ok "Checksum verified."
+fi
+
+rm -f "$HASH_FIFO" "$HASH_OUT"
+sync
+
+ok "Write complete. $DISK now holds a fresh image."
+echo
+echo "Remove any installation media now if this hardware needs it, then press Enter to reboot."
+read -r _ || true
+reboot -f
