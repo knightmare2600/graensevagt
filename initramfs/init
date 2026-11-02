@@ -9,7 +9,7 @@
 # side. This script only ever handles deployment, not building.
 #
 # Kernel command line parameters consumed (set by the iPXE menu entry that boots this):
-#   graensevagt_image=<url>      Required. URL of a zstd-compressed raw disk image.
+#   graensevagt_image=<url>      Required. URL of a gzip-compressed raw disk image.
 #   graensevagt_checksum=<url>   Optional. URL of a plain-text file whose first
 #                                 whitespace-separated field is the image's sha256sum
 #                                 (same convention this estate's other fetch tooling
@@ -21,19 +21,25 @@
 #                                 guessing which one is meant.
 #
 # Busybox applets this script needs present in the build: mount, cat, mkdir, sleep, tee,
-# mkfifo, dd, wget, sha256sum, udhcpc, reboot. gzip/gunzip ships in virtually every
-# busybox build; zstd decompression support does NOT -- confirmed not guaranteed across
-# busybox configs, so this script assumes a separate static `zstd` binary is bundled in
-# the initramfs rather than relying on busybox's own (inconsistent) zstd applet. If the
-# served image is ever switched to gzip instead, swap the one `zstd -d` line below for
-# `gunzip` and drop the separate static binary.
+# mkfifo, dd, wget, gunzip, sha256sum, udhcpc, reboot -- all confirmed present in
+# Debian's own busybox build (1:1.37.0-6+b9) via `busybox --list`.
 #
 # Version history (append only, never delete entries):
 #   0.1.0  2026-11-02  First draft. Untested -- no real initramfs has been built around
 #                       this yet, so none of this has run against real busybox. Written
 #                       against the documented behaviour of each applet, not verified
 #                       live. Treat every assumption above as a presumption to confirm,
-#                       not a settled fact, until it's actually booted for real.
+#                       not a settled fact, until it's actually booted for real. Used
+#                       zstd for the image compression/decompression, assuming a
+#                       separate static zstd binary would be bundled.
+#   0.2.0  2026-11-02  Switched to gzip instead -- confirmed via `busybox --list` that
+#                       Debian's busybox build has no zstd applet at all, and no
+#                       Debian-packaged static zstd binary exists either (would have
+#                       needed a third-party upstream binary, its own sourcing/trust
+#                       overhead). gzip -9 instead of zstd -19 costs real size (485MB vs
+#                       320MB compressed, confirmed by actually compressing the same
+#                       image both ways) but needs nothing extra at all -- busybox's own
+#                       gunzip covers it. Robert's call, favouring simplicity.
 #
 set -eu
 
@@ -125,7 +131,7 @@ done
 
 # -- Fetch, decompress, write, and verify -- all in one streaming pass -----------
 # Never buffers the whole image anywhere (no local filesystem large enough to hold it
-# exists in this environment anyway) -- wget's stdout feeds zstd, which feeds a fifo
+# exists in this environment anyway) -- wget's stdout feeds gunzip, which feeds a fifo
 # split two ways: one copy to the real disk via dd, the other to a backgrounded
 # sha256sum so the checksum can be checked without a second pass over the disk.
 HASH_FIFO="/tmp/graensevagt-hash.fifo"
@@ -135,7 +141,7 @@ sha256sum "$HASH_FIFO" >"$HASH_OUT" &
 HASH_PID=$!
 
 info "Fetching, decompressing, and writing to $DISK..."
-wget -O - "$IMAGE_URL" | zstd -d | tee "$HASH_FIFO" | dd of="$DISK" bs=4M conv=fsync
+wget -O - "$IMAGE_URL" | gunzip | tee "$HASH_FIFO" | dd of="$DISK" bs=4M conv=fsync
 wait "$HASH_PID"
 
 ACTUAL_SUM="$(awk '{print $1}' "$HASH_OUT")"
