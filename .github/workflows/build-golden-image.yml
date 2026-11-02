@@ -1,0 +1,224 @@
+# build-golden-image.yml
+#
+# Automates building the pfSense "golden image" -- runs the real pfSense installer
+# once, scripted and unattended via QEMU, and publishes the resulting disk as a release
+# asset. This replaces the manual, by-hand process used to build the first golden image
+# (2026-11-02): extract the vendor ISO, swap in a FreeBSD-bug-fixed scriptedpart binary,
+# add /etc/installerconfig + /boot/loader.conf.local, rebuild the ISO, run the scripted
+# install under QEMU, verify it completed, compress the resulting disk.
+#
+# Manually triggered (workflow_dispatch) -- this is a deliberate, occasional build (a
+# pfSense version bump, a scriptedpart re-check), not something that should run on every
+# push.
+#
+# Version history (append only, never delete entries):
+#   0.1.0  2026-11-02  First draft. The individual steps are all things that were
+#                       actually run and confirmed working by hand this same session
+#                       (see project_pfsense_httpboot_sanboot_2026_11_01 for the full
+#                       history) -- but this exact workflow, end to end, inside a real
+#                       GitHub Actions runner, has NOT been run yet. Two real unknowns,
+#                       not yet confirmed: whether ubuntu-latest's hosted runners
+#                       actually have working KVM access (mixed reports found when
+#                       researching this -- some say yes since ~2023, some report it
+#                       still not working; this workflow checks for it explicitly and
+#                       falls back to -accel tcg if not, rather than assuming either
+#                       way), and whether a scripted install under pure TCG emulation
+#                       (if KVM isn't available) completes within a sane time at all --
+#                       timeout is set generously (60 minutes for the install step,
+#                       90 for the whole job) for exactly this reason. A third
+#                       unconfirmed assumption: the dd offsets used to extract the EFI
+#                       System Partition and BIOS boot blob from the vendor ISO
+#                       (confirmed correct against the specific ISO file used while
+#                       building this by hand, same version string, but not reconfirmed
+#                       byte-for-byte against whatever atxfiles.netgate.com actually
+#                       serves) -- the efi.img extraction is sanity-checked (grep for
+#                       the EFISYS label), the bios-boot.bin extraction only checks it
+#                       isn't all zero bytes, which would catch a grossly wrong offset
+#                       but not a subtly shifted one.
+#
+name: Build golden image
+
+on:
+  workflow_dispatch:
+    inputs:
+      pfsense_iso_url:
+        description: "URL of the pfSense CE vendor ISO (gzip-compressed .iso.gz)"
+        required: true
+        default: "https://atxfiles.netgate.com/mirror/downloads/pfSense-CE-2.7.2-RELEASE-amd64.iso.gz"
+      freebsd_bootonly_url:
+        description: "URL of a FreeBSD bootonly ISO carrying a fixed scriptedpart (bug 273723)"
+        required: true
+        default: "https://archive.freebsd.org/old-releases/ISO-IMAGES/14.1/FreeBSD-14.1-RELEASE-amd64-bootonly.iso"
+      partition_size:
+        description: "Root partition size for the scripted install (freebsd-ufs)"
+        required: true
+        default: "2560M"
+      disk_size:
+        description: "Virtual target disk size"
+        required: true
+        default: "4G"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            xorriso qemu-system-x86 ovmf curl
+
+      - name: Check KVM availability
+        id: kvm
+        run: |
+          if [ -e /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            echo "KVM is available and accessible"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "KVM not accessible -- falling back to software emulation (tcg)." \
+                 "This will be considerably slower; the install step's own timeout" \
+                 "is set generously to allow for this."
+          fi
+
+      - name: Download pfSense vendor ISO
+        run: |
+          curl -fsSL -o pfsense.iso.gz "${{ github.event.inputs.pfsense_iso_url }}"
+          gunzip pfsense.iso.gz
+          ls -la pfsense.iso
+
+      - name: Download FreeBSD bootonly ISO and extract the fixed scriptedpart
+        run: |
+          curl -fsSL -o bootonly.iso "${{ github.event.inputs.freebsd_bootonly_url }}"
+          xorriso -osirrox on -indev bootonly.iso \
+            -extract /usr/libexec/bsdinstall/scriptedpart scriptedpart-fixed
+          file scriptedpart-fixed
+          rm -f bootonly.iso
+
+      - name: Extract vendor ISO content
+        run: |
+          mkdir -p extracted
+          xorriso -osirrox on -indev pfsense.iso -extract / extracted
+
+      - name: Swap in the fixed scriptedpart (FreeBSD bug 273723)
+        run: |
+          # The shipped binary is mode 555 (no write permission even for the owner) --
+          # has to be removed before it can be replaced, confirmed live while building
+          # this the first time by hand.
+          rm -f extracted/usr/libexec/bsdinstall/scriptedpart
+          cp scriptedpart-fixed extracted/usr/libexec/bsdinstall/scriptedpart
+          chmod 555 extracted/usr/libexec/bsdinstall/scriptedpart
+
+      - name: Write installerconfig and loader.conf.local
+        run: |
+          cat > extracted/etc/installerconfig <<EOF
+          PARTITIONS="ada0 { ${{ github.event.inputs.partition_size }} freebsd-ufs / }"
+          DISTRIBUTIONS="base.txz"
+          ROOTPASS_PLAIN="pfsense"
+
+          #!/bin/sh
+          echo "golden image build \$(date -u +%Y-%m-%dT%H:%M:%SZ)" > /etc/golden-image-build-marker
+          EOF
+          cat > extracted/boot/loader.conf.local <<EOF
+          console="comconsole"
+          boot_multicons="NO"
+          boot_serial="YES"
+          comconsole_speed="115200"
+          autoboot_delay="3"
+          EOF
+
+      - name: Rebuild the installer ISO
+        run: |
+          dd if=pfsense.iso of=efi.img bs=512 skip=80 count=4096 status=none
+          dd if=pfsense.iso of=bios-boot.bin bs=2048 skip=1044 count=1 status=none
+          grep -aq EFISYS efi.img || { echo "efi.img doesn't look like a real ESP -- aborting"; exit 1; }
+          # Only catches a grossly wrong offset (e.g. landing past the end of the ISO),
+          # not a subtly shifted one -- the dd offsets themselves are a fixed assumption
+          # about this specific ISO's layout, see this workflow's own header comment.
+          cmp -s bios-boot.bin <(dd if=/dev/zero bs=2048 count=1 status=none) && \
+            { echo "bios-boot.bin is all zero bytes -- the dd offset is wrong, aborting"; exit 1; }
+
+          xorriso -as mkisofs -R -V PFSENSE -o installer.iso \
+            -graft-points \
+            -b bios-boot.bin -no-emul-boot -boot-load-size 4 \
+            -eltorito-alt-boot \
+            -e efi.img -no-emul-boot \
+            --protective-msdos-label \
+            "/=extracted" \
+            "/bios-boot.bin=bios-boot.bin" \
+            "/efi.img=efi.img"
+
+          # Free the extracted tree before QEMU needs real disk headroom for the install.
+          rm -rf extracted pfsense.iso scriptedpart-fixed
+
+      - name: Run the scripted install under QEMU
+        run: |
+          qemu-img create -f raw golden.raw "${{ github.event.inputs.disk_size }}"
+
+          ACCEL="tcg"
+          if [ "${{ steps.kvm.outputs.available }}" = "true" ]; then
+            ACCEL="kvm"
+          fi
+
+          # Ubuntu's ovmf package has shipped this under a few different paths/names
+          # across versions -- not confirmed which one ubuntu-latest actually uses right
+          # now, so check several plausible candidates rather than assume one.
+          OVMF_PATH=""
+          for candidate in \
+            /usr/share/OVMF/OVMF_CODE_4M.fd \
+            /usr/share/OVMF/OVMF_CODE.fd \
+            /usr/share/ovmf/OVMF.fd \
+            /usr/share/qemu/OVMF.fd \
+            ; do
+            if [ -f "$candidate" ]; then
+              OVMF_PATH="$candidate"
+              break
+            fi
+          done
+          if [ -z "$OVMF_PATH" ]; then
+            echo "No OVMF firmware found at any known path -- listing what the ovmf package actually installed:"
+            dpkg -L ovmf 2>&1 | grep -i '\.fd$' || true
+            exit 1
+          fi
+          echo "Using OVMF firmware: $OVMF_PATH"
+
+          python3 .github/workflows/scripts/run_scripted_install.py \
+            --timeout 2700 \
+            --log-file install-console.log \
+            --qemu-args \
+            qemu-system-x86_64 \
+            -machine pc \
+            -accel "$ACCEL" \
+            -cpu qemu64 \
+            -bios "$OVMF_PATH" \
+            -m 2048 \
+            -cdrom installer.iso \
+            -drive file=golden.raw,format=raw,if=ide \
+            -boot d \
+            -nographic \
+            -no-reboot
+
+      - name: Show install console log on failure
+        if: failure()
+        run: cat install-console.log || true
+
+      - name: Compress the golden image
+        run: |
+          gzip -9 golden.raw
+          mv golden.raw.gz "pfsense-2.7.2-graensevagt-golden.img.gz"
+          ls -la pfsense-2.7.2-graensevagt-golden.img.gz
+          sha256sum pfsense-2.7.2-graensevagt-golden.img.gz > pfsense-2.7.2-graensevagt-golden.img.gz.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: golden-image
+          path: |
+            pfsense-2.7.2-graensevagt-golden.img.gz
+            pfsense-2.7.2-graensevagt-golden.img.gz.sha256
+          retention-days: 14

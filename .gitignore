@@ -1,0 +1,10 @@
+# The golden image is a derived, regenerable build output (produced by the
+# build-golden-image workflow), not source -- never committed here. 485MB also exceeds
+# GitHub's 100MB hard per-file limit for plain git anyway. Published as a release asset
+# instead.
+*.img.gz
+*.img
+
+# Build scratch -- intermediate state from building the golden image locally, never
+# meant to be committed.
+/build/
