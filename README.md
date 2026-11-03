@@ -92,18 +92,34 @@ that runs on every push.
 
 ## Current status, honestly
 
-- The deploy mechanism (this repo) is confirmed working end to end — real DHCP lease
-  applied, disk auto-detected, streamed fetch+write with checksum verification, clean
-  reboot — but only against a small dummy test image, under this estate's own sandbox
-  QEMU. **Not yet tested against the real pfSense golden image, and not yet tested on
-  real or VMware hardware.**
-- The `build-golden-image` workflow has not yet been run for real on a GitHub Actions
-  runner. Two real unknowns, documented in its own header: whether `ubuntu-latest`'s
+- **Confirmed working end to end on real VMware hardware, 2026-11-03**: fetch the real
+  ~485MB pfSense golden image over HTTP, auto-detect the target disk, stream-write with
+  checksum verification, reboot, and boot cleanly into the real pfSense first-boot
+  console wizard — no manual steps, no errors.
+- **v0.3.0 fixes a real first-boot bug found during that real-hardware test**: the
+  golden image's `/etc/fstab` referenced its root/boot partitions by raw device path
+  (`/dev/ada0p2`, matching how FreeBSD enumerated the disk under the QEMU setup it was
+  built on), which doesn't match every target — this specific VMware box's SCSI
+  controller enumerates the same disk as `da0`, so the kernel couldn't find root and
+  panicked. Fixed by GPT-labelling both partitions and rewriting `/etc/fstab` to
+  reference them by label (`/dev/gpt/rootfs`, `/dev/gpt/efiboot`) instead of a raw
+  device path — labels live in the partition table itself, independent of whatever name
+  a given controller/bus happens to assign, so this is correct regardless of target
+  hardware. Applied directly to the shipped image rather than a from-scratch rebuild;
+  see `graensevagt`'s own GitHub release notes for this version and
+  `example_music_infra`'s `project_pfsense_httpboot_sanboot_2026_11_01` memory for the
+  full diagnostic trail.
+- The `build-golden-image` workflow still has not been run for real on a GitHub Actions
+  runner (the golden image shipped so far was built and fixed by hand, not through this
+  workflow). Two real unknowns, documented in its own header: whether `ubuntu-latest`'s
   hosted runners have accessible KVM, and how long a software-emulated install takes if
   not.
 - **No per-deployment customisation exists yet** — every machine written from the same
   golden image gets the same hostname and the same stock pfSense WebGUI admin
   credentials (`admin`/`pfsense`, pfSense's own out-of-the-box default, never
-  customised during the scripted install). Fixing this (likely a small answer-file
-  mechanism, matching this estate's own convention elsewhere) is tracked separately,
-  not yet built.
+  customised during the scripted install). `/etc/rc.initial` (the console menu's own
+  entry point) is a plain shell script, confirmed by Robert — the same script that
+  resets the WebGUI password back to defaults is the likely pathway for a future
+  one-shot first-boot customisation hook (and for a future in-place version upgrade).
+  Fixing this (likely a small answer-file mechanism, matching this estate's own
+  convention elsewhere) is tracked separately, not yet built.
