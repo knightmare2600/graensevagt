@@ -62,7 +62,7 @@ than needing them hand-ordered.
 ## Using it
 
 Add a `menu.ipxe` entry (this estate's own copy already has one, `:graensevagt`,
-v2.26) that boots this repo's kernel/initramfs with these kernel command-line
+v2.27) that boots this repo's kernel/initramfs with these kernel command-line
 parameters:
 
 ```
@@ -72,6 +72,18 @@ graensevagt_disk=<dev>|auto    Required. Target block device, or "auto" for the
                                 single disk present (refuses if more than one exists).
 graensevagt_iface=<name>       Optional. Network interface for DHCP. Auto-detects the
                                 first non-loopback interface if unset.
+```
+
+Example `menu.ipxe` entry, serving `kernel-amd64`/`initramfs-amd64.cpio.gz`/the golden
+image off `${boot-url}` (this estate's own site-mirrored bootstrap web server, set
+earlier in `menu.ipxe` by gateway detection -- any plain HTTP URL works the same way):
+
+```
+:graensevagt
+iseq ${arch} arm64 && goto noarch-msg ||
+kernel ${boot-url}/graensevagt/kernel-amd64 console=ttyS0,115200 console=tty0 graensevagt_image=${boot-url}/graensevagt/pfsense-2.7.2-graensevagt-golden.img.gz graensevagt_disk=auto
+initrd ${boot-url}/graensevagt/initramfs-amd64.cpio.gz
+boot
 ```
 
 ## Building the golden image
