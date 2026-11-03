@@ -4,8 +4,9 @@ import sys
 import select
 
 qemu_args = sys.argv[1:]
-log_path = "/tmp/claude-1000/-home-knightmare-example-music-infra/df994ae5-6d51-4b04-8ddb-242abd0f8f68/scratchpad/smoke-test/console.log"
-cmd_path = "/tmp/claude-1000/-home-knightmare-example-music-infra/df994ae5-6d51-4b04-8ddb-242abd0f8f68/scratchpad/smoke-test/send_cmd.txt"
+smoke_dir = os.environ.get("SMOKE_DIR", "/tmp/graensevagt-smoke-test")
+log_path = os.path.join(smoke_dir, "console.log")
+cmd_path = os.path.join(smoke_dir, "send_cmd.txt")
 
 pid, master_fd = pty.fork()
 if pid == 0:
