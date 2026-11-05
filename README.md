@@ -1,7 +1,20 @@
 # Grænsevagt
 
 *Danish: "border guard" — the firewall-fitting name for a deploy tool that writes a
-prebuilt pfSense disk image onto real hardware.*
+prebuilt firewall disk image onto real hardware.*
+
+Supported images:
+
+| Image | Arch | Filesystem | Since | Default WebGUI login |
+|---|---|---|---|---|
+| pfSense CE 2.7.2 | amd64 | UFS | v0.1.0 | `admin` / `pfsense` |
+| [FreeSense](https://freesense.org) 1.1.12 | amd64 | ZFS | v0.4.0 | `admin` / `freesense` |
+| [FreeSense](https://freesense.org) 1.1.12 | arm64 | ZFS | v0.4.0 | `admin` / `freesense` |
+
+FreeSense is a community rebuild of pfSense CE without the vendor lock-in; 1.1.12 is
+based on FreeBSD 16.0-CURRENT and also ships an arm64 build, hence the arm64 deploy side
+added in v0.4.0. The deploy mechanism itself is OS-agnostic (it writes bytes); only the
+golden-image builds differ.
 
 ## What this is
 
@@ -37,17 +50,32 @@ else stops it.
 - `initramfs/init` — the actual deploy-time script (POSIX `sh`, runs under busybox
   `ash`). Read its own header and version-history comments for the full list of kernel
   command-line parameters it takes and every bug found fixing it against a real boot.
-- `initramfs/root/` — the assembled initramfs tree: static busybox + applet symlinks,
-  the init script, a `udhcpc` lease-apply script, and a small bundled kernel-module set
-  (see below).
+- `initramfs/root/` — the assembled amd64 initramfs tree: static busybox + applet
+  symlinks, the init script, a `udhcpc` lease-apply script, and a small bundled
+  kernel-module set (see below).
+- `initramfs/modules-<arch>.txt` — the top-level kernel modules each architecture's
+  initramfs bundles and loads (v0.4.0+). Dependencies are resolved automatically.
+- `tools/build-initramfs.sh` — builds an initramfs for one architecture from a static
+  busybox and a kernel module tree (v0.4.0+; the original amd64 tree was hand-built).
+- `tools/fetch-debian-debs.sh` — fetches Debian .debs for a foreign architecture (the
+  arm64 kernel and busybox) without root and without touching the host's apt/dpkg
+  state, verified by apt itself against the Debian archive keyring.
 - `kernel-amd64` / `initramfs-amd64.cpio.gz` — the built, ready-to-boot kernel and
   initramfs archive. `kernel-amd64` is this estate's own Debian trixie kernel
-  (`6.12.113+deb13-amd64`), not built from scratch.
+  (`6.12.113+deb13-amd64`), not built from scratch. `kernel-arm64` /
+  `initramfs-arm64.cpio.gz` (v0.4.0+, release assets) are the same Debian trixie kernel
+  line for arm64 (`6.12.113+deb13-arm64`, from `linux-image-6.12.113+deb13-arm64`
+  6.12.113-1) with `busybox-static` 1:1.37.0-6+b9 for arm64 — the same versions as amd64.
 - `.github/workflows/build-golden-image.yml` — automates building the actual
   *deployable pfSense image* this tool writes (a separate concern from the deploy
   mechanism above — see "Building the golden image" below).
-- `test/` — the QEMU+PTY smoke-test harness used to find and fix every bug below. Not
-  polished general-purpose tooling, just what was used to verify this live.
+- `.github/workflows/build-freesense-golden-image.yml`, `freesense/installerconfig.in`,
+  `.github/workflows/scripts/run_freesense_install.py` — the same for the FreeSense
+  images, amd64 and arm64 (v0.4.0+; see "Building the FreeSense golden images").
+- `test/` — the QEMU+PTY test harness used to find and fix every bug below.
+  `test/deploy_and_boot.sh` (v0.4.0+) runs one image end to end: deploy via this
+  repo's kernel/initramfs, verify the checksum, then boot the deployed disk to the
+  console menu on a *different* disk controller from the one it was built on.
 
 ### Why it bundles its own kernel modules
 
@@ -59,6 +87,11 @@ virtio_net) and common disk controllers (ahci, virtio_blk, nvme), with a real
 `depmod -b`-generated `modules.dep` so `modprobe` resolves dependencies correctly rather
 than needing them hand-ordered.
 
+v0.4.0 moves the list into `initramfs/modules-<arch>.txt` and adds `virtio_scsi` to both
+(a virtio-scsi disk — Proxmox's default controller — was invisible before, confirmed in
+QEMU). arm64 drops `vmw_pvscsi` (x86-only) and adds `vmxnet3` (the paravirtual NIC of
+VMware on Arm: Fusion on Apple Silicon, ESXi-Arm).
+
 ## Using it
 
 Add a `menu.ipxe` entry (this estate's own copy already has one, `:graensevagt`,
@@ -67,7 +100,9 @@ parameters:
 
 ```
 graensevagt_image=<url>        Required. URL of a gzip-compressed raw disk image.
-graensevagt_checksum=<url>     Optional. URL of a sha256sum file for that image.
+graensevagt_checksum=<url>     Optional. URL of a sha256sum file for that image --
+                                the hash of the RAW (decompressed) image, since that
+                                is what gets hashed as it is written, NOT of the .gz.
 graensevagt_disk=<dev>|auto    Required. Target block device, or "auto" for the
                                 single disk present (refuses if more than one exists).
 graensevagt_iface=<name>       Optional. Network interface for DHCP. Auto-detects the
@@ -86,6 +121,26 @@ initrd ${boot-url}/graensevagt/initramfs-amd64.cpio.gz
 boot
 ```
 
+From v0.4.0, a FreeSense entry choosing the architecture with the same `${arch}`
+convention the entry above already relies on (amd64 → FreeSense amd64, arm64 →
+FreeSense arm64), and passing the raw-image checksum:
+
+```
+:graensevagt-freesense
+iseq ${arch} arm64 && goto graensevagt-freesense-arm64 ||
+kernel ${boot-url}/graensevagt/kernel-amd64 console=ttyS0,115200 console=tty0 graensevagt_image=${boot-url}/graensevagt/freesense-1.1.12-amd64-graensevagt-golden.img.gz graensevagt_checksum=${boot-url}/graensevagt/freesense-1.1.12-amd64-graensevagt-golden.img.sha256 graensevagt_disk=auto
+initrd ${boot-url}/graensevagt/initramfs-amd64.cpio.gz
+boot
+
+:graensevagt-freesense-arm64
+kernel ${boot-url}/graensevagt/kernel-arm64 console=ttyAMA0,115200 console=tty0 graensevagt_image=${boot-url}/graensevagt/freesense-1.1.12-arm64-graensevagt-golden.img.gz graensevagt_checksum=${boot-url}/graensevagt/freesense-1.1.12-arm64-graensevagt-golden.img.sha256 graensevagt_disk=auto
+initrd ${boot-url}/graensevagt/initramfs-arm64.cpio.gz
+boot
+```
+
+`console=ttyAMA0` is the PL011 UART (QEMU `virt`, many Arm servers); the serial device
+name on a given arm64 board varies, so check that board's own console name.
+
 ## Building the golden image
 
 The actual pfSense disk image this tool writes is a *separate* build — see
@@ -101,6 +156,51 @@ The actual pfSense disk image this tool writes is a *separate* build — see
 Trigger it manually via the Actions tab (`workflow_dispatch`) — it's a deliberate,
 occasional build (a pfSense version bump, a `scriptedpart` re-check), not something
 that runs on every push.
+
+Known issue in that workflow (found 2026-11-05, not yet fixed — the pfSense files are
+deliberately left as v0.3.0 shipped them): its `.sha256` is of the `.gz`, while
+`initramfs/init` compares against the hash of the *decompressed* stream, so using that
+file as `graensevagt_checksum=` would always report a mismatch. The FreeSense workflow
+below publishes the raw-image hash.
+
+## Building the FreeSense golden images
+
+`.github/workflows/build-freesense-golden-image.yml` builds both architectures (matrix:
+amd64 on `ubuntu-latest`, arm64 on `ubuntu-24.04-arm`). Unlike the pfSense build it does
+**not** remaster the vendor media:
+
+1. Download the FreeSense installer media (the URLs, and optionally their sha256s, are
+   workflow inputs — no stable direct download link was found to hardcode).
+2. Boot it under QEMU (UEFI). `run_freesense_install.py` answers the console-type
+   prompt, accepts the copyright notice and cancels the welcome menu, which drops to a
+   root shell; the installer mounts a writable memory disk over `/etc`, so it types
+   `/etc/installerconfig` (from `freesense/installerconfig.in`) straight in and runs
+   `bsdinstall script`.
+3. The scripted install reproduces FreeSense's own interactive ZFS layout (pool
+   `FreeSense`, boot environment `ROOT/default`, same datasets, 1 GB swap). With ZFS on
+   GPT, `/etc/fstab` references `/dev/gpt/efiboot0` and `/dev/gpt/swap0` and root comes
+   from the pool's `bootfs`, so v0.3.0's by-label fix is built in rather than patched
+   on. amd64 is BIOS+UEFI; arm64 is UEFI.
+4. One change goes into the `cf` dataset from the installer shell:
+   `/cf/conf/enableserial_force`, FreeSense's own appliance switch for a serial console
+   (without it the stock config leaves the serial console with no getty at all). Video
+   stays the primary console.
+5. The result is checked inside the VM (fstab by label only, `bootfs`, the ESP's
+   removable-media fallback loader, the serial flag), exported, compressed, and its
+   raw-image sha256 recorded.
+
+The same script runs locally; see the workflow for the exact QEMU arguments. Measured
+on a 2-vCPU Debian trixie box: amd64 install ~90 s under KVM; arm64 ~4.5 min under TCG
+emulation (no KVM for aarch64 on an amd64 host).
+
+Two FreeSense-specific things to know:
+
+- The images are 803 MB (amd64) and 733 MB (arm64) gzipped, against pfSense's 485 MB:
+  ZFS `compression=on` has already compressed the blocks, so gzip has little left.
+- The pool fills a 4 GB image and does **not** grow onto a larger target disk by
+  itself (`autoexpand=off`); FreeBSD also warns at boot that "the secondary GPT header
+  is not in the last LBA" (harmless; `gpart recover` fixes it). The pfSense image has
+  the same not-growing limitation.
 
 ## Current status, honestly
 
@@ -134,4 +234,50 @@ that runs on every push.
   resets the WebGUI password back to defaults is the likely pathway for a future
   one-shot first-boot customisation hook (and for a future in-place version upgrade).
   Fixing this (likely a small answer-file mechanism, matching this estate's own
-  convention elsewhere) is tracked separately, not yet built.
+  convention elsewhere) is tracked separately, not yet built. The same applies to the
+  FreeSense images (`admin`/`freesense`). FreeSense's installer has a hook worth
+  looking at for this: `copy_configxml_from_usb` picks up a `config.xml` from a FAT USB
+  stick at install time.
+
+### v0.4.0 (FreeSense, arm64) — tested in QEMU only so far
+
+- **Both FreeSense images built by `run_freesense_install.py`** (not by hand) and run
+  end to end with `test/deploy_and_boot.sh`, 2026-11-05: deploy over HTTP via
+  graensevagt's own kernel/initramfs, raw-image checksum verified, then first boot of
+  the deployed disk on a different controller from the build one:
+  - amd64: built on AHCI (`ada0`), deployed to and booted from virtio-scsi (`da0`),
+    under both UEFI (OVMF) and legacy BIOS (SeaBIOS); reaches the console menu, WAN
+    on DHCP. Default WebGUI login confirmed as `admin`/`freesense` with FreeSense's own
+    `password_verify()` against the generated `config.xml`.
+  - arm64: built on AHCI (`ada0`), deployed to and booted from NVMe (`nda0`) under
+    UEFI (AAVMF), Debian arm64 kernel + this repo's arm64 initramfs (virtio-net DHCP,
+    NVMe auto-detected). First boot stops at FreeSense's interface-assignment prompt
+    because the stock config expects `em0`/`em1` and the VM has VirtIO NICs (`vtnet`);
+    answering it reaches the console menu with WAN on DHCP. Any target whose NICs are
+    not Intel `em` will see the same prompt — normal pfSense/FreeSense behaviour.
+- **VMware virtual hardware, as emulated by QEMU** (amd64, 2026-11-05; QEMU's
+  emulations, not a real VMware host):
+  - **vmxnet3**: works on both sides — Linux `vmxnet3` gets the deploy's DHCP lease
+    and fetches the image; FreeSense attaches `vmx0`/`vmx1`.
+  - **PVSCSI**: the deploy works (Linux `vmw_pvscsi` finds the disk, writes it,
+    checksum verified). Booting FreeSense from it does not complete *under QEMU*:
+    SeaBIOS loads the kernel, FreeBSD's `pvscsi0` attaches and finds `da0`, then the
+    guest goes idle after root mount with no error. OVMF cannot boot PVSCSI at all
+    (no driver). Whether real VMware's PVSCSI behaves the same is **unknown** — needs
+    a real VMware test.
+  - **LSI Logic SAS** (QEMU `mptsas1068`): FreeSense boots from it cleanly
+    (`da0 at mpt0`, console menu). The deploy side could not be tested: Linux `mptsas`
+    initialises the controller but never discovers a disk on QEMU's emulation —
+    and neither does Debian's own full initramfs on the same setup, so this is not a
+    gap in graensevagt's initramfs. The same `mpt*` modules deployed fine on real
+    VMware in v0.3.0.
+  - **LSI Logic Parallel** (`mptspi`): QEMU has no emulation of it; untested.
+- **Not yet confirmed on real hardware** for either architecture, and the arm64
+  deploy side has only run under emulation. The `build-freesense-golden-image`
+  workflow has not been run on a GitHub runner yet.
+- The committed amd64 initramfs (`initramfs-amd64.cpio.gz`, `initramfs/root/`) is now
+  rebuilt from source by `tools/build-initramfs.sh` with init 0.6.0 (pipeline-failure
+  fix, per-arch module list, `virtio_scsi` + `vmxnet3`). Deploy-tested in QEMU against
+  a 404 and an unfetchable checksum URL (each now fails loudly instead of claiming
+  success) and against the real FreeSense image. The v0.3.0 initramfs that was proven
+  on real VMware stays available as that release's asset.

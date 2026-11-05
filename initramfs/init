@@ -132,8 +132,35 @@
 #                       using, since VMware offers either as a plain config choice
 #                       and there's no reason to leave the same gap for whichever one
 #                       wasn't tested this time.
+#   0.6.0  2026-11-05  Two changes, for v0.4.0 (FreeSense, and an arm64 build):
+#                       (1) A real bug, found by accident while testing the FreeSense
+#                       image: a stale web server on the test port answered 404, wget
+#                       and gunzip both failed, and the write pipeline still "succeeded"
+#                       -- a POSIX pipeline's status is its LAST command's, and dd
+#                       happily copied 0 records. set -e never fired; only the checksum
+#                       step caught it ("Written image sha256: e3b0c442..." -- the hash
+#                       of empty input). Without graensevagt_checksum= this would have
+#                       printed "Write complete" over a disk it had not written at all.
+#                       Now: set -o pipefail (confirmed supported by this busybox ash),
+#                       the pipeline is checked explicitly via if/die (an unchecked
+#                       set -e exit would kill PID 1, i.e. a kernel panic, not a
+#                       readable error), and an empty expected checksum is its own
+#                       error rather than a confusing "expected , got ..." mismatch.
+#                       (2) The module list now comes from /etc/graensevagt/modules (one
+#                       name per line, written by tools/build-initramfs.sh from
+#                       initramfs/modules-<arch>.txt) instead of being hardcoded here --
+#                       the right set differs per architecture (vmw_pvscsi does not
+#                       exist on arm64 at all; arm64 VMware -- Fusion on Apple Silicon,
+#                       ESXi-Arm -- uses vmxnet3). Falls back to the 0.5.0 list if the
+#                       file is missing, so an initramfs built the old way still works.
+#                       Both lists add virtio_scsi: confirmed live that a virtio-scsi
+#                       target disk (Proxmox's default controller type) was invisible --
+#                       "graensevagt_disk=auto needs exactly one real disk, found 0".
+#                       amd64 also adds vmxnet3 -- VMware's paravirtual NIC is just as
+#                       common on x86 VMware guests as on arm64 ones.
 #
 set -eu
+set -o pipefail
 
 info()  { echo "[*] $*"; }
 ok()    { echo "[+] $*"; }
@@ -157,7 +184,11 @@ mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
 # real hardware. modprobe (not insmod) is used so modules.dep resolves
 # dependencies correctly (e.g. ahci needs libahci) rather than needing them
 # hand-ordered here.
-for mod in e1000 e1000e virtio_net ahci sd_mod virtio_blk nvme mptsas mptspi vmw_pvscsi; do
+MODULES="e1000 e1000e virtio_net ahci sd_mod virtio_blk nvme mptsas mptspi vmw_pvscsi"
+if [ -r /etc/graensevagt/modules ]; then
+  MODULES="$(cat /etc/graensevagt/modules)"
+fi
+for mod in $MODULES; do
   modprobe "$mod" 2>/dev/null || true
 done
 
@@ -279,7 +310,11 @@ sha256sum "$HASH_FIFO" >"$HASH_OUT" &
 HASH_PID=$!
 
 info "Fetching, decompressing, and writing to $DISK..."
-wget -O - "$IMAGE_URL" | gunzip | tee "$HASH_FIFO" | dd of="$DISK" bs=4M conv=fsync
+if ! wget -O - "$IMAGE_URL" | gunzip | tee "$HASH_FIFO" | dd of="$DISK" bs=4M conv=fsync; then
+  wait "$HASH_PID" || true
+  die "Fetch/decompress/write pipeline FAILED (see wget/gunzip/dd errors above) --" \
+      "$DISK is partly or wholly unwritten. Do not reboot into it."
+fi
 wait "$HASH_PID"
 
 ACTUAL_SUM="$(awk '{print $1}' "$HASH_OUT")"
@@ -287,7 +322,9 @@ info "Written image sha256: $ACTUAL_SUM"
 
 if [ -n "$CHECKSUM_URL" ]; then
   info "Verifying against $CHECKSUM_URL..."
-  EXPECTED_SUM="$(wget -O - "$CHECKSUM_URL" | awk '{print $1}')"
+  EXPECTED_SUM="$(wget -O - "$CHECKSUM_URL" | awk '{print $1}')" || EXPECTED_SUM=""
+  [ -n "$EXPECTED_SUM" ] || die "Could not fetch a checksum from $CHECKSUM_URL --" \
+      "$DISK was written but is UNVERIFIED. Do not reboot into it."
   if [ "$ACTUAL_SUM" != "$EXPECTED_SUM" ]; then
     die "CHECKSUM MISMATCH: expected $EXPECTED_SUM, got $ACTUAL_SUM -- $DISK now holds a" \
         "corrupt or wrong image. Do not reboot into it."

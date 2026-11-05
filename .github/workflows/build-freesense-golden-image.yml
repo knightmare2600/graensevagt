@@ -1,0 +1,183 @@
+# build-freesense-golden-image.yml
+#
+# Builds the FreeSense golden images (amd64 and arm64) graensevagt writes to target
+# disks: boots the unmodified vendor installer under QEMU, drives a scripted ZFS install
+# from its rescue shell (.github/workflows/scripts/run_freesense_install.py, answer file
+# freesense/installerconfig.in), verifies the result inside the VM, then compresses the
+# disk and records the sha256 of the RAW image -- the value initramfs/init compares
+# against, since it hashes the decompressed stream it writes, not the .gz.
+#
+# Separate from build-golden-image.yml (pfSense), which is left untouched. That one
+# remasters the vendor ISO and swaps in a fixed scriptedpart; neither is needed here
+# (FreeSense 1.1.12 is FreeBSD 16.0-CURRENT based, and with ZFS + GPT the installer
+# already writes fstab by GPT label).
+#
+# Manually triggered (workflow_dispatch) -- a deliberate, occasional build.
+#
+# Version history (append only, never delete entries):
+#   0.1.0  2026-11-05  First version. Every step was run for real on a local Debian
+#                       trixie box (amd64 under KVM: ~90 s install; arm64 under TCG
+#                       emulation on an amd64 host), and both images were deployed via
+#                       graensevagt and booted in QEMU. This workflow itself, on GitHub's
+#                       hosted runners, has NOT been run yet. Unverified, and checked
+#                       for explicitly rather than assumed: whether the hosted runners
+#                       expose /dev/kvm (falls back to TCG if not -- arm64 under TCG is
+#                       slow, hence the long timeout), and the Ubuntu firmware file
+#                       paths (several candidates are tried). No default media URLs:
+#                       FreeSense's download page hands out files via query parameters
+#                       and no stable direct link was found, so the URLs (and,
+#                       recommended, their sha256s) are required/optional inputs.
+#
+name: Build FreeSense golden images
+
+on:
+  workflow_dispatch:
+    inputs:
+      freesense_version:
+        description: "FreeSense version string, used in asset names (e.g. 1.1.12)"
+        required: true
+        default: "1.1.12"
+      amd64_iso_url:
+        description: "URL of the FreeSense amd64 installer ISO (.iso, or .iso.gz/.iso.xz)"
+        required: true
+      amd64_iso_sha256:
+        description: "Optional sha256 of the file at amd64_iso_url, as downloaded"
+        required: false
+        default: ""
+      arm64_img_url:
+        description: "URL of the FreeSense arm64 installer image (.img.xz or .img)"
+        required: true
+      arm64_img_sha256:
+        description: "Optional sha256 of the file at arm64_img_url, as downloaded"
+        required: false
+        default: ""
+      disk_size:
+        description: "Golden image (virtual disk) size -- the minimum target disk size"
+        required: true
+        default: "4G"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+            packages: qemu-system-x86 ovmf
+            boot_type: "BIOS+UEFI"
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            packages: qemu-system-arm qemu-efi-aarch64
+            boot_type: "UEFI"
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 240
+    defaults:
+      run:
+        shell: bash
+    env:
+      ASSET: freesense-${{ github.event.inputs.freesense_version }}-${{ matrix.arch }}-graensevagt-golden.img
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ${{ matrix.packages }} curl xz-utils
+
+      - name: Check KVM availability
+        id: kvm
+        run: |
+          if [ -e /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+            echo "accel=kvm" >> "$GITHUB_OUTPUT"
+            echo "KVM is available"
+          else
+            echo "accel=tcg" >> "$GITHUB_OUTPUT"
+            echo "KVM not accessible -- falling back to TCG software emulation (slow)"
+          fi
+
+      - name: Download and verify the vendor installer media
+        env:
+          URL: ${{ matrix.arch == 'amd64' && github.event.inputs.amd64_iso_url || github.event.inputs.arm64_img_url }}
+          SUM: ${{ matrix.arch == 'amd64' && github.event.inputs.amd64_iso_sha256 || github.event.inputs.arm64_img_sha256 }}
+        run: |
+          name="${URL%%\?*}"
+          name="media.${name##*.}"
+          curl -fL --retry 3 -o "$name" "$URL"
+          if [ -n "$SUM" ]; then
+            echo "$SUM  $name" | sha256sum -c -
+          else
+            echo "::warning::No sha256 given for $URL -- media is unverified"
+            sha256sum "$name"
+          fi
+          case "$name" in
+            *.xz) xz -dc "$name" > media.raw ;;
+            *.gz) gzip -dc "$name" > media.raw ;;
+            *)    mv "$name" media.raw ;;
+          esac
+          rm -f media.xz media.gz
+          ls -la media.raw
+
+      - name: Run the scripted install under QEMU
+        run: |
+          qemu-img create -f raw golden.raw "${{ github.event.inputs.disk_size }}"
+          ACCEL="${{ steps.kvm.outputs.accel }}"
+          pick() { for f in "$@"; do [ -f "$f" ] && { echo "$f"; return; }; done; }
+          if [ "${{ matrix.arch }}" = amd64 ]; then
+            CODE="$(pick /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_CODE.fd)"
+            VARS="$(pick /usr/share/OVMF/OVMF_VARS_4M.fd /usr/share/OVMF/OVMF_VARS.fd)"
+            CPU=qemu64; [ "$ACCEL" = kvm ] && CPU=host
+            QEMU=(qemu-system-x86_64 -machine q35 -accel "$ACCEL" -cpu "$CPU"
+              -drive file=media.raw,media=cdrom,readonly=on,if=none,id=cd0
+              -device ahci,id=ahci0 -device ide-cd,bus=ahci0.0,drive=cd0
+              -device ide-hd,bus=ahci0.1,drive=hd0)
+          else
+            CODE="$(pick /usr/share/AAVMF/AAVMF_CODE.fd /usr/share/qemu-efi-aarch64/QEMU_EFI.fd)"
+            VARS="$(pick /usr/share/AAVMF/AAVMF_VARS.fd)"
+            CPU=cortex-a72; [ "$ACCEL" = kvm ] && CPU=host
+            ACCEL_ARG="$ACCEL"; [ "$ACCEL" = tcg ] && ACCEL_ARG="tcg,thread=multi"
+            QEMU=(qemu-system-aarch64 -machine virt -accel "$ACCEL_ARG" -cpu "$CPU"
+              -drive if=none,id=inst,file=media.raw,format=raw,snapshot=on
+              -device virtio-blk-pci,drive=inst
+              -device ich9-ahci,id=ahci0 -device ide-hd,bus=ahci0.0,drive=hd0)
+          fi
+          [ -n "$CODE" ] && [ -n "$VARS" ] || { echo "UEFI firmware not found"; exit 1; }
+          cp "$VARS" vars.fd
+          python3 .github/workflows/scripts/run_freesense_install.py \
+            --installerconfig freesense/installerconfig.in \
+            --boot-type "${{ matrix.boot_type }}" \
+            --build-id "FreeSense ${{ github.event.inputs.freesense_version }} ${{ matrix.arch }}, run ${{ github.run_id }}" \
+            --log-file install-console.log \
+            --timeout 12600 \
+            --qemu-args "${QEMU[@]}" -smp 2 -m 1536 \
+            -drive if=pflash,format=raw,readonly=on,file="$CODE" \
+            -drive if=pflash,format=raw,file=vars.fd \
+            -drive file=golden.raw,format=raw,if=none,id=hd0 \
+            -nic none -nographic -no-reboot
+
+      - name: Upload install console log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: install-console-${{ matrix.arch }}
+          path: install-console.log
+          retention-days: 14
+
+      - name: Compress the golden image and record the raw sha256
+        run: |
+          rm -f media.raw
+          # initramfs/init verifies the sha256 of the DECOMPRESSED stream it writes, so
+          # the published checksum is of the raw image, not of the .gz.
+          sha256sum golden.raw | awk -v n="$ASSET" '{print $1"  "n}' > "$ASSET.sha256"
+          gzip -9 -n golden.raw
+          mv golden.raw.gz "$ASSET.gz"
+          ls -la "$ASSET.gz"
+          cat "$ASSET.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: freesense-golden-image-${{ matrix.arch }}
+          path: |
+            ${{ env.ASSET }}.gz
+            ${{ env.ASSET }}.sha256
+          retention-days: 14

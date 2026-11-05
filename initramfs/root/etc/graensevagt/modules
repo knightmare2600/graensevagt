@@ -1,0 +1,12 @@
+e1000
+e1000e
+virtio_net
+vmxnet3
+ahci
+sd_mod
+virtio_blk
+virtio_scsi
+nvme
+mptsas
+mptspi
+vmw_pvscsi

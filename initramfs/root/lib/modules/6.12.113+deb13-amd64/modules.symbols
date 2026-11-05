@@ -1,11 +1,8 @@
 # Aliases for symbols, used by symbol_request().
-alias symbol:nvmf_register_transport nvme_fabrics
 alias symbol:scsi_add_device scsi_mod
 alias symbol:ata_pci_sff_init_host libata
-alias symbol:nvmf_unregister_transport nvme_fabrics
 alias symbol:scsi_dev_info_list_add_keyed scsi_mod
 alias symbol:net_failover_create net_failover
-alias symbol:nvmf_connect_admin_queue nvme_fabrics
 alias symbol:ata_scsi_dma_need_drain libata
 alias symbol:scsi_print_command scsi_mod
 alias symbol:nvme_alloc_io_tag_set nvme_core
@@ -26,7 +23,6 @@ alias symbol:ahci_qc_issue libahci
 alias symbol:ata_port_probe libata
 alias symbol:ata_xfer_mode2mask libata
 alias symbol:mptscsih_shutdown mptscsih
-alias symbol:nvmf_ip_options_match nvme_fabrics
 alias symbol:__tracepoint_ata_bmdma_status libata
 alias symbol:__SCT__tp_func_ata_bmdma_setup libata
 alias symbol:ata_scsi_ioctl libata
@@ -45,7 +41,6 @@ alias symbol:ata_sff_drain_fifo libata
 alias symbol:ata_port_desc libata
 alias symbol:mptscsih_raid_id_to_num mptscsih
 alias symbol:dev_attr_link_power_management_policy libata
-alias symbol:nvme_keyring_id nvme_keyring
 alias symbol:ata_link_offline libata
 alias symbol:scsi_is_sdev_device scsi_mod
 alias symbol:ata_platform_remove_one libata
@@ -89,7 +84,6 @@ alias symbol:__scsi_add_device scsi_mod
 alias symbol:ata_std_bios_param libata
 alias symbol:__starget_for_each_device scsi_mod
 alias symbol:sas_ata_ncq_prio_supported scsi_transport_sas
-alias symbol:nvme_tls_key_lookup nvme_keyring
 alias symbol:ata_link_abort libata
 alias symbol:ata_port_classify libata
 alias symbol:ata_host_resume libata
@@ -134,7 +128,6 @@ alias symbol:nvme_wait_freeze nvme_core
 alias symbol:nvme_auth_negotiate nvme_core
 alias symbol:ata_host_alloc_pinfo libata
 alias symbol:ioc_list mptbase
-alias symbol:nvmf_get_address nvme_fabrics
 alias symbol:spi_print_msg scsi_transport_spi
 alias symbol:ata_pci_bmdma_clear_simplex libata
 alias symbol:ahci_fill_cmd_slot libahci
@@ -235,7 +228,6 @@ alias symbol:scsi_host_get scsi_mod
 alias symbol:nvme_passthru_start nvme_core
 alias symbol:scmd_printk scsi_mod
 alias symbol:scsi_report_device_reset scsi_mod
-alias symbol:nvmf_reg_read32 nvme_fabrics
 alias symbol:ata_scsi_cmd_error_handler libata
 alias symbol:ata_bmdma32_port_ops libata
 alias symbol:ahci_host_activate libahci
@@ -267,7 +259,6 @@ alias symbol:nvme_remove_admin_tag_set nvme_core
 alias symbol:sas_is_tlr_enabled scsi_transport_sas
 alias symbol:ata_sas_port_suspend libata
 alias symbol:nvme_command_effects nvme_core
-alias symbol:nvmf_should_reconnect nvme_fabrics
 alias symbol:dev_attr_ncq_prio_supported libata
 alias symbol:scsicam_bios_param scsi_mod
 alias symbol:nvme_mpath_start_request nvme_core
@@ -369,7 +360,6 @@ alias symbol:sata_link_debounce libata
 alias symbol:pci_test_config_bits libata
 alias symbol:sas_rphy_delete scsi_transport_sas
 alias symbol:scsi_mode_sense scsi_mod
-alias symbol:nvmf_free_options nvme_fabrics
 alias symbol:sata_deb_timing_normal libata
 alias symbol:spi_display_xfer_agreement scsi_transport_spi
 alias symbol:scsi_dh_set_params scsi_mod
@@ -462,7 +452,6 @@ alias symbol:mptscsih_ioc_reset mptscsih
 alias symbol:__scsi_print_sense scsi_mod
 alias symbol:sas_phy_free scsi_transport_sas
 alias symbol:scsi_internal_device_block_nowait scsi_mod
-alias symbol:nvmf_subsystem_reset nvme_fabrics
 alias symbol:ata_sff_qc_fill_rtf libata
 alias symbol:scsi_eh_flush_done_q scsi_mod
 alias symbol:nvme_auth_free nvme_core
@@ -506,15 +495,12 @@ alias symbol:mpt_config mptbase
 alias symbol:scsi_get_device_flags_keyed scsi_mod
 alias symbol:mptscsih_event_process mptscsih
 alias symbol:sas_port_alloc_num scsi_transport_sas
-alias symbol:nvmf_reg_write32 nvme_fabrics
 alias symbol:mpt_get_msg_frame mptbase
 alias symbol:mptscsih_IssueTaskMgmt mptscsih
 alias symbol:ata_bmdma_stop libata
 alias symbol:ata_tf_to_fis libata
-alias symbol:nvmf_reg_read64 nvme_fabrics
 alias symbol:scsi_host_alloc scsi_mod
 alias symbol:scsi_vpd_lun_id scsi_mod
-alias symbol:nvmf_connect_io_queue nvme_fabrics
 alias symbol:scsi_get_vpd_page scsi_mod
 alias symbol:mptscsih_remove mptscsih
 alias symbol:sata_std_hardreset libata
@@ -531,7 +517,6 @@ alias symbol:scsi_set_sense_field_pointer scsi_common
 alias symbol:sdev_prefix_printk scsi_mod
 alias symbol:sata_scr_read libata
 alias symbol:scsi_block_targets scsi_mod
-alias symbol:nvmf_set_io_queues nvme_fabrics
 alias symbol:ata_sff_queue_pio_task libata
 alias symbol:mpt_register mptbase
 alias symbol:ata_ncq_sdev_groups libata
@@ -560,7 +545,6 @@ alias symbol:nvme_auth_hmac_name nvme_auth
 alias symbol:scsi_remove_target scsi_mod
 alias symbol:sas_disable_tlr scsi_transport_sas
 alias symbol:nvme_auth_augmented_challenge nvme_auth
-alias symbol:nvmf_map_queues nvme_fabrics
 alias symbol:mpt_event_deregister mptbase
 alias symbol:spi_attach_transport scsi_transport_spi
 alias symbol:mptscsih_slave_destroy mptscsih
@@ -585,7 +569,6 @@ alias symbol:scsi_extd_sense_format scsi_mod
 alias symbol:scsi_target_unblock scsi_mod
 alias symbol:__traceiter_ata_bmdma_start libata
 alias symbol:ata_print_version libata
-alias symbol:nvme_tls_psk_default nvme_keyring
 alias symbol:ata_tport_add libata
 alias symbol:dev_attr_sw_activity libata
 alias symbol:scsi_register_device_handler scsi_mod

@@ -1,0 +1,77 @@
+# installerconfig.in
+#
+# bsdinstall(8) scripted-install answer file for building a FreeSense golden image.
+# run_freesense_install.py substitutes the @PLACEHOLDERS@ below, then types the result
+# into the FreeSense installer's Rescue Shell as /etc/installerconfig (the live media
+# mounts a writable md(4) over /etc, so no remastering of the vendor media is needed)
+# and runs `bsdinstall script /etc/installerconfig`.
+#
+#   @DISK@       Target disk as the installer sees it (ada0 for an AHCI disk).
+#   @BOOT_TYPE@  zfsboot boot type: "BIOS+UEFI" on amd64, "UEFI" on arm64.
+#   @BUILD_ID@   Free-text build identifier written to /etc/graensevagt-build-marker.
+#
+# Everything above the "#!/bin/sh" line is the preamble, sourced by bsdinstall's
+# `script` stage. Everything from it onwards runs inside the new system's chroot after
+# the base system is extracted.
+#
+# The ZFS layout reproduces the one FreeSense's own interactive installer creates
+# (/usr/sbin/startbsdinstall on the 1.1.12 media: pool "FreeSense", boot environment
+# root ROOT/default, the same dataset list and 1g swap) so a golden image is laid out
+# exactly like a hand-installed FreeSense box.
+#
+# Version history (append only, never delete entries):
+#   0.1.0  2026-11-05  First version. Confirmed live against FreeSense 1.1.12 amd64:
+#                       the ZFSBOOT_* variables MUST be exported. Unexported, the
+#                       preamble is sourced by `script` but `bsdinstall zfsboot` runs
+#                       as a separate process, never sees them, and drops into its
+#                       interactive "ZFS Configuration" menu with "stripe: 0 disks".
+#                       With GPT, zfsboot writes /dev/gpt/efiboot0 and /dev/gpt/swap0
+#                       into fstab itself and root comes from the pool's bootfs
+#                       property, so the v0.3.0 by-label fstab fix is built in here
+#                       rather than patched afterwards (confirmed: the image boots on
+#                       virtio-scsi/da0 after being built on AHCI/ada0).
+#                       /cf/conf/enableserial_force is FreeSense's own appliance
+#                       switch for a serial console (honoured by is_serial_enabled()
+#                       in /etc/inc/freesense-utils.inc whatever config.xml says, and
+#                       deliberately preserved by factory reset in config.lib.inc).
+#                       Without it the stock default config.xml leaves ttyu0 getty
+#                       off and a headless or serial-only target has no console menu
+#                       at all (confirmed live: "Bootup complete", then nothing on
+#                       serial). Video stays the primary console.
+#                       It is NOT created here: ROOT/default/cf is canmount=noauto and
+#                       is not mounted while this chroot script runs (confirmed live),
+#                       so a file written to /cf here lands in ROOT/default's own /cf
+#                       directory and is hidden once the cf dataset mounts over it at
+#                       boot. run_freesense_install.py creates it from the installer's
+#                       shell instead, with the cf dataset explicitly mounted.
+#
+export nonInteractive="YES"
+export DISTRIBUTIONS="base.txz"
+export OSNAME=FreeSense
+export EFI_LABEL_NAME=FreeSense
+export ZFSBOOT_DISKS="@DISK@"
+export ZFSBOOT_VDEV_TYPE=stripe
+export ZFSBOOT_PARTITION_SCHEME=GPT
+export ZFSBOOT_BOOT_TYPE="@BOOT_TYPE@"
+export ZFSBOOT_POOL_NAME=FreeSense
+export ZFSBOOT_BEROOT_NAME=ROOT
+export ZFSBOOT_BOOTFS_NAME=default
+export ZFSBOOT_SWAP_SIZE=1g
+export ZFSBOOT_DATASETS="
+/ROOT	mountpoint=none
+/ROOT/default	mountpoint=/
+/ROOT/default/cf	mountpoint=/cf,setuid=off,exec=off
+/tmp	mountpoint=/tmp,exec=on,setuid=off
+/home	mountpoint=/home
+/var	mountpoint=/var
+/var/cache	mountpoint=/var/cache,setuid=off,exec=off,compression=off
+/var/db	mountpoint=/var/db,setuid=off,exec=off
+/var/empty	mountpoint=/var/empty
+/var/log	mountpoint=/var/log,setuid=off,exec=off
+/var/tmp	mountpoint=/var/tmp,setuid=off
+/ROOT/default/var_cache_pkg	mountpoint=/var/cache/pkg,setuid=off,exec=off
+/ROOT/default/var_db_pkg	mountpoint=/var/db/pkg,setuid=off,exec=off
+"
+
+#!/bin/sh
+echo "graensevagt golden image, @BUILD_ID@, built $(date -u +%Y-%m-%dT%H:%M:%SZ)" > /etc/graensevagt-build-marker

@@ -8,3 +8,11 @@
 # Build scratch -- intermediate state from building the golden image locally, never
 # meant to be committed.
 /build/
+
+# Vendor installer media (FreeSense/pfSense ISOs and memstick images) -- downloaded
+# build inputs, multi-GB, never committed. Python bytecode from running the build
+# scripts locally.
+*.iso
+*.iso.gz
+*.img.xz
+__pycache__/
