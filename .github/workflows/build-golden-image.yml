@@ -35,6 +35,14 @@
 #                       the EFISYS label), the bios-boot.bin extraction only checks it
 #                       isn't all zero bytes, which would catch a grossly wrong offset
 #                       but not a subtly shifted one.
+#   0.2.0  2026-11-05  Checksum fix (found while adding FreeSense, v0.4.0): the only
+#                       .sha256 published was of the .gz, but initramfs/init verifies
+#                       the sha256 of the DECOMPRESSED stream it writes, so passing it
+#                       as graensevagt_checksum= could never match. Now publishes
+#                       <name>.img.sha256 (raw image -- the one to give init) alongside
+#                       <name>.img.gz.sha256 (the download, for sha256sum -c). Confirmed
+#                       the raw-hash form against the shipped v0.3.0 image: a real
+#                       deploy reported "Checksum verified".
 #
 name: Build golden image
 
@@ -210,9 +218,14 @@ jobs:
 
       - name: Compress the golden image
         run: |
+          # Raw-image hash first: it is what initramfs/init checks (graensevagt_checksum=),
+          # since init hashes the decompressed stream as it writes it.
+          sha256sum golden.raw | awk '{print $1"  pfsense-2.7.2-graensevagt-golden.img"}' \
+            > pfsense-2.7.2-graensevagt-golden.img.sha256
           gzip -9 golden.raw
           mv golden.raw.gz "pfsense-2.7.2-graensevagt-golden.img.gz"
           ls -la pfsense-2.7.2-graensevagt-golden.img.gz
+          # Download hash, for checking the .gz itself with sha256sum -c.
           sha256sum pfsense-2.7.2-graensevagt-golden.img.gz > pfsense-2.7.2-graensevagt-golden.img.gz.sha256
 
       - uses: actions/upload-artifact@v4
@@ -220,5 +233,6 @@ jobs:
           name: golden-image
           path: |
             pfsense-2.7.2-graensevagt-golden.img.gz
+            pfsense-2.7.2-graensevagt-golden.img.sha256
             pfsense-2.7.2-graensevagt-golden.img.gz.sha256
           retention-days: 14

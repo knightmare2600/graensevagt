@@ -21,6 +21,10 @@
 # Needed for pvscsi and mptsas1068: OVMF has no boot driver for either (confirmed live:
 # "map: No mapping found", UEFI shell), whereas SeaBIOS can boot from both. Real
 # VMware's EFI firmware does have them; this is a QEMU limitation only.
+# Caveat: on a BIOS boot the FreeSense loader makes VIDEO the primary console, so
+# pre-login prompts (e.g. interface assignment) never reach the serial line this
+# script watches and the boot run times out although the system is up (confirmed
+# live with a QEMU screendump). Check the video console before calling that a hang.
 #
 # Usage: deploy_and_boot.sh <amd64|arm64> <image.gz URL> <raw sha256 URL> [workdir]
 #   URLs are as seen from inside the guest (QEMU user networking: host = 10.0.2.2).

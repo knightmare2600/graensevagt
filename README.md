@@ -116,7 +116,7 @@ earlier in `menu.ipxe` by gateway detection -- any plain HTTP URL works the same
 ```
 :graensevagt
 iseq ${arch} arm64 && goto noarch-msg ||
-kernel ${boot-url}/graensevagt/kernel-amd64 console=ttyS0,115200 console=tty0 graensevagt_image=${boot-url}/graensevagt/pfsense-2.7.2-graensevagt-golden.img.gz graensevagt_disk=auto
+kernel ${boot-url}/graensevagt/kernel-amd64 console=ttyS0,115200 console=tty0 graensevagt_image=${boot-url}/graensevagt/pfsense-2.7.2-graensevagt-golden.img.gz graensevagt_checksum=${boot-url}/graensevagt/pfsense-2.7.2-graensevagt-golden.img.sha256 graensevagt_disk=auto
 initrd ${boot-url}/graensevagt/initramfs-amd64.cpio.gz
 boot
 ```
@@ -157,11 +157,15 @@ Trigger it manually via the Actions tab (`workflow_dispatch`) — it's a deliber
 occasional build (a pfSense version bump, a `scriptedpart` re-check), not something
 that runs on every push.
 
-Known issue in that workflow (found 2026-11-05, not yet fixed — the pfSense files are
-deliberately left as v0.3.0 shipped them): its `.sha256` is of the `.gz`, while
-`initramfs/init` compares against the hash of the *decompressed* stream, so using that
-file as `graensevagt_checksum=` would always report a mismatch. The FreeSense workflow
-below publishes the raw-image hash.
+Checksums (fixed 2026-11-05, workflow 0.2.0): the workflow originally published only
+the `.gz`'s sha256, but `initramfs/init` compares against the hash of the
+*decompressed* stream, so that file could never be used as `graensevagt_checksum=`. Both
+workflows now publish `<name>.img.sha256` (raw image — give this one to init) and
+`<name>.img.gz.sha256` (the download). v0.3.0 shipped no checksum at all; the raw-image
+hash of its unchanged pfSense image is published with v0.4.0
+(`pfsense-2.7.2-graensevagt-golden.img.sha256`), confirmed by a real deploy reporting
+"Checksum verified". Each release from v0.4.0 also carries a `SHA256SUMS` covering
+every asset as downloaded.
 
 ## Building the FreeSense golden images
 
@@ -259,12 +263,14 @@ Two FreeSense-specific things to know:
   emulations, not a real VMware host):
   - **vmxnet3**: works on both sides — Linux `vmxnet3` gets the deploy's DHCP lease
     and fetches the image; FreeSense attaches `vmx0`/`vmx1`.
-  - **PVSCSI**: the deploy works (Linux `vmw_pvscsi` finds the disk, writes it,
-    checksum verified). Booting FreeSense from it does not complete *under QEMU*:
-    SeaBIOS loads the kernel, FreeBSD's `pvscsi0` attaches and finds `da0`, then the
-    guest goes idle after root mount with no error. OVMF cannot boot PVSCSI at all
-    (no driver). Whether real VMware's PVSCSI behaves the same is **unknown** — needs
-    a real VMware test.
+  - **PVSCSI**: works on both sides. The deploy finds the disk via Linux
+    `vmw_pvscsi`, writes it and verifies the checksum; FreeSense boots from it
+    (FreeBSD `pvscsi0`, `da0`) and, with vmxnet3 NICs, stops at the interface-
+    assignment prompt (`vmx0`/`vmx1` vs the default config's `em0`/`em1`). Booted
+    through SeaBIOS, because QEMU's OVMF has no PVSCSI boot driver (real VMware's EFI
+    firmware does). Note: on a legacy-BIOS boot the FreeSense loader makes **video**
+    the primary console, so that pre-login prompt appears on the screen only, not on
+    serial; on UEFI, serial is primary and it appears there too.
   - **LSI Logic SAS** (QEMU `mptsas1068`): FreeSense boots from it cleanly
     (`da0 at mpt0`, console menu). The deploy side could not be tested: Linux `mptsas`
     initialises the controller but never discovers a disk on QEMU's emulation —

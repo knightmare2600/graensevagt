@@ -27,6 +27,9 @@
 #                       FreeSense's download page hands out files via query parameters
 #                       and no stable direct link was found, so the URLs (and,
 #                       recommended, their sha256s) are required/optional inputs.
+#                       Publishes both <asset>.sha256 (raw image, for
+#                       graensevagt_checksum=) and <asset>.gz.sha256 (the download),
+#                       matching build-golden-image.yml 0.2.0.
 #
 name: Build FreeSense golden images
 
@@ -172,7 +175,9 @@ jobs:
           gzip -9 -n golden.raw
           mv golden.raw.gz "$ASSET.gz"
           ls -la "$ASSET.gz"
-          cat "$ASSET.sha256"
+          # Download hash too, for checking the .gz itself with sha256sum -c.
+          sha256sum "$ASSET.gz" > "$ASSET.gz.sha256"
+          cat "$ASSET.sha256" "$ASSET.gz.sha256"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -180,4 +185,5 @@ jobs:
           path: |
             ${{ env.ASSET }}.gz
             ${{ env.ASSET }}.sha256
+            ${{ env.ASSET }}.gz.sha256
           retention-days: 14
