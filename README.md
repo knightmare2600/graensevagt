@@ -11,10 +11,56 @@ Supported images:
 | [FreeSense](https://freesense.org) 1.1.12 | amd64 | ZFS | v0.4.0 | `admin` / `freesense` |
 | [FreeSense](https://freesense.org) 1.1.12 | arm64 | ZFS | v0.4.0 | `admin` / `freesense` |
 
-FreeSense is a community rebuild of pfSense CE without the vendor lock-in; 1.1.12 is
-based on FreeBSD 16.0-CURRENT and also ships an arm64 build, hence the arm64 deploy side
-added in v0.4.0. The deploy mechanism itself is OS-agnostic (it writes bytes); only the
-golden-image builds differ.
+The deploy mechanism itself is OS-agnostic (it writes bytes); only the golden-image
+builds differ. See "About FreeSense" below for what it is and why this project uses it.
+
+## About FreeSense, and why this project uses it
+
+**What it is.** [FreeSense](https://freesense.org) describes itself as "an independent,
+open-source derivative of pfSense® CE, built on FreeBSD", licensed under Apache-2.0. Its
+installer's own notice calls it "a community rebuild and rebrand of the open-source
+pfSense(R) CE firewall distribution" and states that it "is NOT pfSense and is not
+affiliated with or endorsed by Netgate or Electric Sheep Fencing". Version 1.1.12 is
+based on FreeBSD 16.0-CURRENT and ships both amd64 and arm64 builds; its arm64 build is
+described by the project as experimental.
+
+- Website and downloads: <https://freesense.org> (<https://freesense.org/download/>)
+- Documentation: <https://docs.freesense.org>
+- Source code: <https://github.com/FreeSense-org>
+
+**Why this project moved its focus to it.** pfSense CE remains supported here (see the
+table above), and pfSense CE itself is still maintained by Netgate: CE 2.8.0 and 2.8.1
+were released in 2025. The reasons for adding FreeSense are about how the software is
+obtained and which hardware it runs on, as documented by Netgate itself (checked
+2026-11-05; these arrangements can change, so check the linked sources for the current
+position):
+
+1. **Obtaining installation media.** Netgate's
+   [installation documentation](https://docs.netgate.com/pfsense/en/latest/install/installing-pfsense.html)
+   directs users to the Netgate Installer via the Netgate Store, using a Netgate Store
+   account: "The installer is free, but uses the checkout process for delivery." This
+   project prefers installation media that can be fetched anonymously and
+   reproducibly by an automated build, without an account or a store checkout, even a
+   $0.00 one. FreeSense publishes its images without accounts ("No accounts, no
+   telemetry, no artificial limits", per its website). (Older pfSense CE images, such
+   as the 2.7.2 one this project's pfSense build uses, remain available from Netgate's
+   file mirror.)
+2. **arm64 support.** pfSense CE is published for amd64 only. Netgate's
+   [installer image documentation](https://docs.netgate.com/pfsense/en/latest/install/download-installer-image.html)
+   describes its only AArch64 image as being "for installing on 64-bit ARM devices
+   from Netgate, such as the Netgate 1100 and Netgate 2100", and a Netgate
+   administrator stated on the
+   [Netgate forum](https://forum.netgate.com/topic/198783/any-updates-on-plans-to-make-an-arm64-image-available)
+   that there are "no plans for ARM CE images any time soon". FreeSense publishes
+   arm64 images for general arm64 hardware (UEFI systems, virtual machines,
+   Raspberry Pi), which is what allows this project to offer amd64 and arm64 builds
+   side by side, as other projects in this estate do.
+
+These are this project's reasons for its own choice, not a criticism of anyone's
+right to distribute their software as they see fit. pfSense® is a registered trademark
+of Electric Sheep Fencing, LLC, licensed to Netgate; it is used here only to identify
+the software. This project is not affiliated with or endorsed by Netgate, Electric
+Sheep Fencing or the FreeSense project.
 
 ## What this is
 
